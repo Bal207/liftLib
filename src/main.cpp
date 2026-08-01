@@ -1,7 +1,9 @@
 #include "main.h"
+
+#include <numbers>
 #include <vector>
-#include <limits>
-#include <cmath>
+
+#include "liftlib/liftlib.hpp"
 
 /**
  * A callback function for LLEMU's center button.
@@ -50,103 +52,25 @@ void disabled() {}
  */
 void competition_initialize() {}
 
-
-
-
-
-class PID {
-	private:
-		float KP = 0, KI = 0, KD = 0;
-		float previousError = 0;
-		float integral = 0;
-		float threshold = 0;
-
-		
-	public:
-		PID(float kp, float ki, float kd, float threshold) : KP(kp), KI(ki), KD(kd), threshold(threshold) {}
-
-		float calculate(float setpoint, float actual) {
-			return calculate(setpoint - actual);
-		}
-
-		float calculate(float error)
-		{
-			float derivative = error - previousError;
-			integral = integral + error;
-			float output = KP * error + KI * integral + KD * derivative;
-			previousError = error;
-			return output;
-		}
-
-		void reset() {
-			integral = 0;
-			previousError = 0;
-		}
-
-		bool isSettled(float error) {
-			return std::abs(error) < threshold;
-		}
-		
-
-};
-
-
-struct MotorConfig
-{
-	pros::Motor motor;
-	float gear_ratio; //Driven/Driver
-	pros::motor_brake_mode_e brakeType = pros::E_MOTOR_BRAKE_COAST;
-};
-
 pros::Motor claw_motor(-10);
 pros::Motor liftMotor1(6, pros::MotorGear::green);
 pros::Motor liftMotor2(-7, pros::MotorGear::green);
 pros::Motor clawRotation(9);
+
 MotorConfig motor1{claw_motor, 1, pros::E_MOTOR_BRAKE_HOLD};
-MotorConfig liftMotorOne{liftMotor1, (0.78 * std::numbers::pi)/360};
-MotorConfig liftMotorTwo{liftMotor2, (0.78 * std::numbers::pi)/360};
-MotorConfig clawRotationConfig{clawRotation, 5};
+MotorConfig liftMotorOne{liftMotor1, (2 * 0.78 * std::numbers::pi) / 360};
+MotorConfig liftMotorTwo{liftMotor2, (2 * 0.78 * std::numbers::pi) / 360};
+MotorConfig clawRotationConfig{clawRotation, 1.0/5.0};
 
+PID claw_pid(1, 0, 0, 1, 0);
+PID lift_pid(5, 0, 0, 1, 0);
+PID claw_rotation_pid(1, 0, 0, 1, 0);
 
-PID claw_pid(1, 0, 0, 1);
-PID lift_pid(5, 0, 0, 1);
-PID claw_rotation_pid(1, 0, 0, 1);
+Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 30);
+Subsystem claw({motor1}, claw_pid);
+Subsystem clawRotator({clawRotationConfig}, claw_rotation_pid);
 
-
-void moveTo(std::vector<MotorConfig>& motorConfigs, PID& pid, float target)
-{
-	float output;
-	float error = std::numeric_limits<float>::max();
-	float currentPosition;
-	pid.reset();
-
-	while(!pid.isSettled(error)) {
-		currentPosition = 0;
-		for(const MotorConfig& config : motorConfigs)
-		{
-			float position = config.motor.get_position();
-			currentPosition += position * config.gear_ratio;
-		}
-		currentPosition /= motorConfigs.size();
-		error = target - currentPosition;
-		output = pid.calculate(error);
-
-		for(const MotorConfig& config : motorConfigs)
-		{
-			config.motor.move_velocity(output);
-		}
-		std::cout << "Error: " << error << " currentPosition: " << currentPosition << " Output " << output << " Actual Motor Input " << liftMotor1.get_current_draw() <<std::endl;
-
-		pros::delay(100);
-	}
-	for(const MotorConfig& config : motorConfigs)
-	{
-		config.motor.set_brake_mode(config.brakeType);
-		config.motor.brake();
-	}
-}
-
-
+Lift cascade{&liftStage, &claw, &clawRotator};
 
 /**
  * Runs the user autonomous code. This function will be started in its own task
@@ -160,23 +84,12 @@ void moveTo(std::vector<MotorConfig>& motorConfigs, PID& pid, float target)
  * from where it left off.
  */
 void autonomous() {
-	std::vector<MotorConfig> clawMotors{motor1};
-	std::vector<MotorConfig> liftMotors{liftMotorOne, liftMotorTwo};
-	std::vector<MotorConfig> clawRotationMotors{clawRotationConfig};
-	claw_motor.tare_position();
-	claw_motor.set_encoder_units(pros::E_MOTOR_ENCODER_DEGREES);
-	liftMotor1.tare_position();
-	liftMotor2.tare_position();
+	cascade.initialize();
 
-	liftMotor1.set_encoder_units(pros::E_MOTOR_ENCODER_DEGREES);
-	liftMotor2.set_encoder_units(pros::E_MOTOR_ENCODER_DEGREES);
+	clawRotator.moveTo(-90);
 
-	clawRotation.tare_position();
-	clawRotation.set_encoder_units(pros::E_MOTOR_ENCODER_DEGREES);
 	
-	//moveTo(liftMotors, claw_pid, 100);
-	//moveTo(liftMotors, lift_pid, 15);
-	moveTo(clawRotationMotors, claw_rotation_pid, -90);
+	cascade.moveTo({{&liftStage, 15}, {&claw, 100}, {&clawRotator, -90}});
 }
 
 /**
@@ -196,7 +109,6 @@ void opcontrol() {
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
 	pros::MotorGroup left_mg({1, -2, 3});    // Creates a motor group with forwards ports 1 & 3 and reversed port 2
 	pros::MotorGroup right_mg({-4, 5, -6});  // Creates a motor group with forwards port 5 and reversed ports 4 & 6
-
 
 	while (true) {
 		pros::lcd::print(0, "%d %d %d", (pros::lcd::read_buttons() & LCD_BTN_LEFT) >> 2,
