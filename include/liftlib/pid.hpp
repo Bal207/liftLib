@@ -9,18 +9,33 @@ class PID {
 
 	float slew = 0;
 	float previousOutput = 0;
+	bool hasPreviousError = false;
+
+	float maxIntegral = 0;
+	float integralZone = 0;
+	float maxOutput = 0;
 
    public:
-	PID(float kp, float ki, float kd, float threshold);
-	PID(float kp, float ki, float kd, float threshold, float slew);
+	PID(float kp, float ki, float kd, float threshold, float slew = 0);
 
 	float calculate(float setpoint, float actual);
 	float calculate(float error);
 
 	void reset();
 
-	bool isSettled(float error);
+	bool isSettled(float error) const;
 
 	void setSlew(float slew);
 	float getSlew() const;
+
+	void setMaxIntegral(float maxIntegral);
+	float getMaxIntegral() const;
+
+	void setIntegralZone(float integralZone);
+	float getIntegralZone() const;
+
+	void setMaxOutput(float maxOutput);
+	float getMaxOutput() const;
+
+	float getThreshold() const;
 };

@@ -52,25 +52,25 @@ void disabled() {}
  */
 void competition_initialize() {}
 
-pros::Motor claw_motor(-10);
-pros::Motor liftMotor1(6, pros::MotorGear::green);
-pros::Motor liftMotor2(-7, pros::MotorGear::green);
-pros::Motor clawRotation(9);
+constexpr float LIFT_RATIO = (2 * 0.78 * std::numbers::pi) / 360;
 
-MotorConfig motor1{claw_motor, 1, pros::E_MOTOR_BRAKE_HOLD};
-MotorConfig liftMotorOne{liftMotor1, (2 * 0.78 * std::numbers::pi) / 360};
-MotorConfig liftMotorTwo{liftMotor2, (2 * 0.78 * std::numbers::pi) / 360};
-MotorConfig clawRotationConfig{clawRotation, 1.0/5.0};
+MotorConfig motor1{-10, 1, pros::E_MOTOR_BRAKE_HOLD};
+MotorConfig liftMotorOne{6, LIFT_RATIO, pros::E_MOTOR_BRAKE_HOLD};
+MotorConfig liftMotorTwo{-7, LIFT_RATIO, pros::E_MOTOR_BRAKE_HOLD};
+MotorConfig clawRotationConfig{9, 0.2};
 
-PID claw_pid(1, 0, 0, 1, 0);
-PID lift_pid(5, 0, 0, 1, 0);
-PID claw_rotation_pid(1, 0, 0, 1, 0);
+PID claw_pid(1, 0, 0, 1);
+PID lift_pid(5, 0, 0, 1);
+PID claw_rotation_pid(1, 0, 0, 1);
 
-Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 30);
+Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 55);
 Subsystem claw({motor1}, claw_pid);
 Subsystem clawRotator({clawRotationConfig}, claw_rotation_pid);
 
 Lift cascade{&liftStage, &claw, &clawRotator};
+
+
+
 
 /**
  * Runs the user autonomous code. This function will be started in its own task
@@ -86,11 +86,10 @@ Lift cascade{&liftStage, &claw, &clawRotator};
 void autonomous() {
 	cascade.initialize();
 
-	clawRotator.moveTo(-90);
-
-	
-	cascade.moveTo({{&liftStage, 15}, {&claw, 100}, {&clawRotator, -90}});
+	cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false, 3000);
 }
+
+
 
 /**
  * Runs the operator control code. This function will be started in its own task
