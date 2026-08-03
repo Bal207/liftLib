@@ -1,8 +1,8 @@
-# liftlib
+# liftLib
 
-A PROS library for position-controlled VEX V5 lifts. Drives one or more motor
-groups to target positions with PID, and coordinates several of them as a single
-multi-stage lift.
+An extremely easy to use yet dynamic library for vexV5 Lifts.
+- Easy to tune, setup and use for auton routines
+- Great for organizing your different subsystems for custom control
 
 ## Features
 
@@ -32,9 +32,11 @@ Then include the umbrella header:
 ## Usage
 
 ### A single subsystem
+The gear ratio can be dynamically used depending on the use case (winches, gears, etc.) It is simply a scaling factor
+multiplied by the motor encoder units (degrees). (motor position * gear ratio).
 
 ```cpp
-MotorConfig left{1, 1.0f, pros::E_MOTOR_BRAKE_HOLD};
+MotorConfig left{1, 1.0f, pros::E_MOTOR_BRAKE_HOLD}; // port, gear ratio, brake mode
 MotorConfig right{-2, 1.0f, pros::E_MOTOR_BRAKE_HOLD};
 
 PID armPid(1.5f, 0.01f, 0.5f, 2.0f);
@@ -91,7 +93,7 @@ void autonomous() {
 ```
 
 `Lift` owns the motion while a group move runs: starting one cancels any move
-already in progress, including per-stage moves on the stages it is about to
+already in progress, including seperate stage movements on the stages it is about to
 drive. Do not drive a stage directly while a group move that includes it is
 running.
 
@@ -110,7 +112,7 @@ arm.getPID().setSlew(5);            // max output change per tick
 ```
 
 Start with kP only, raise it until the lift oscillates, then back off and add kD.
-Add kI last, with an integral zone, and only to close a steady-state gap.
+If necessary you can add KI last for steady state error, and even use an integral zone for further benefits.
 
 ## Namespacing
 
@@ -140,4 +142,4 @@ src/main.cpp         demo entry points, excluded from the template
 
 ## Requirements
 
-PROS 4 (kernel 4.2.2 or later), C++20 or newer.
+PROS 4 (4.2.2 onward) and C++20 or newer.
