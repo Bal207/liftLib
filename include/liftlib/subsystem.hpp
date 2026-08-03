@@ -9,6 +9,8 @@
 #include "liftlib/motor_config.hpp"
 #include "liftlib/pid.hpp"
 
+namespace liftlib {
+
 struct MotorSlot final {
 	pros::Motor motor;
 	MotorSlot(std::int8_t port, pros::MotorGears gearset) : motor(port, gearset) {}
@@ -99,3 +101,5 @@ class Subsystem {
 
 	void moveToBlocking(float target, std::uint32_t timeout);
 };
+
+}  // namespace liftlib

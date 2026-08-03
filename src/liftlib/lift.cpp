@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+namespace liftlib {
+
 Lift::Lift(std::initializer_list<Subsystem*> stages) : cancelRequested(false) {
 	for (Subsystem* stage : stages) {
 		if (stage != nullptr && !hasStage(stage)) {
@@ -251,3 +253,5 @@ Subsystem* Lift::getStage(std::size_t index) const {
 std::size_t Lift::stageCount() const {
 	return stages.size();
 }
+
+}  // namespace liftlib

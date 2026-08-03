@@ -1,5 +1,7 @@
 #pragma once
 
+namespace liftlib {
+
 class PID {
    private:
 	float KP = 0, KI = 0, KD = 0;
@@ -39,3 +41,5 @@ class PID {
 
 	float getThreshold() const;
 };
+
+}  // namespace liftlib

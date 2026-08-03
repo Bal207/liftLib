@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+namespace liftlib {
+
 PID::PID(float kp, float ki, float kd, float threshold, float slew)
     : KP(kp),
       KI(ki),
@@ -99,3 +101,5 @@ float PID::getMaxOutput() const {
 float PID::getThreshold() const {
 	return threshold;
 }
+
+}  // namespace liftlib

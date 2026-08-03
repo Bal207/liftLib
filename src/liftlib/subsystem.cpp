@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+namespace liftlib {
+
 namespace {
 
 // Limits the velocity based on what the gearset is
@@ -83,8 +85,6 @@ float Subsystem::getPosition() const {
 	}
 	return counted > 0 ? total / counted : 0;
 }
-
-float Sub
 
 float Subsystem::clampTarget(float target) const {
 	return limited ? std::clamp(target, minPosition, maxPosition) : target;
@@ -213,3 +213,5 @@ PID& Subsystem::getPID() {
 Subsystem::~Subsystem() {
 	cancelTask();
 }
+
+}  // namespace liftlib

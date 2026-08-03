@@ -10,6 +10,8 @@
 #include "api.h"
 #include "liftlib/subsystem.hpp"
 
+namespace liftlib {
+
 class Lift {
    private:
 	std::vector<Subsystem*> stages;
@@ -107,3 +109,5 @@ class Lift {
 
 	std::size_t stageCount() const;
 };
+
+}  // namespace liftlib
