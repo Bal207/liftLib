@@ -31,6 +31,8 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, PID pid)
       lastError(std::numeric_limits<float>::max()),
       settled(false),
       settleTicks(0),
+      holdTarget(0),
+      holding(false),
       cancelRequested(false) {
 	buildMotors();
 }
@@ -45,6 +47,8 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, PID pid, float minPo
       lastError(std::numeric_limits<float>::max()),
       settled(false),
       settleTicks(0),
+      holdTarget(0),
+      holding(false),
       cancelRequested(false) {
 	buildMotors();
 }
@@ -102,7 +106,13 @@ void Subsystem::update(float target) {
 	}
 	settled = settleTicks >= SETTLE_COUNT;
 
-	float output = pid.calculate(lastError);
+	float output = pid.calculate(lastError) + feedforward.calculate(getPosition());
+
+	const float limit = pid.getMaxOutput();
+	if (limit > 0) {
+		output = std::clamp(output, -limit, limit);
+	}
+
 	for (const MotorSlot& slot : motors) {
 		slot.motor.move_velocity(static_cast<std::int32_t>(output));
 	}
@@ -121,6 +131,7 @@ void Subsystem::reset() {
 	lastError = std::numeric_limits<float>::max();
 	settled = false;
 	settleTicks = 0;
+	holding = false;
 }
 
 void Subsystem::brake() {
@@ -128,6 +139,65 @@ void Subsystem::brake() {
 		motors[i].motor.set_brake_mode(motorConfigs[i].brakeType);
 		motors[i].motor.brake();
 	}
+}
+
+void Subsystem::hold() {
+	if (!feedforward.isEnabled()) {
+		brake();
+		return;
+	}
+
+	// Latch the position on the first call so repeated calls close the loop
+	// around one target rather than chasing wherever the mechanism has drifted.
+	if (!holding) {
+		holdTarget = getPosition();
+		holding = true;
+	}
+
+	update(holdTarget);
+}
+
+void Subsystem::releaseHold() {
+	holding = false;
+}
+
+bool Subsystem::isHolding() const {
+	return holding;
+}
+
+void Subsystem::setFeedforward(const Feedforward& feedforward) {
+	this->feedforward = feedforward;
+}
+
+Feedforward& Subsystem::getFeedforward() {
+	return feedforward;
+}
+
+float Subsystem::holdOutput() const {
+	return feedforward.calculate(getPosition());
+}
+
+void Subsystem::setOutput(float output) {
+	float limit = pid.getMaxOutput();
+	if (limit > 0) {
+		output = std::clamp(output, -limit, limit);
+	}
+
+	for (const MotorSlot& slot : motors) {
+		slot.motor.move_velocity(static_cast<std::int32_t>(output));
+	}
+}
+
+bool Subsystem::hasLimits() const {
+	return limited;
+}
+
+float Subsystem::getMinPosition() const {
+	return minPosition;
+}
+
+float Subsystem::getMaxPosition() const {
+	return maxPosition;
 }
 
 void Subsystem::moveToBlocking(float target, std::uint32_t timeout) {
@@ -144,7 +214,11 @@ void Subsystem::moveToBlocking(float target, std::uint32_t timeout) {
 		pros::Task::delay_until(&now, LOOP_DELAY_MS);
 	}
 
-	brake();
+	if (cancelRequested.load()) {
+		brake();
+	} else {
+		hold();
+	}
 }
 
 void Subsystem::moveTo(float target, bool async, std::uint32_t timeout) {

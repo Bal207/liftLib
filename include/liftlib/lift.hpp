@@ -57,6 +57,9 @@ class Lift {
 
 	void brake();
 
+	/** Settles every stage, holding against gravity where it is configured. */
+	void hold();
+
 	/**
 	 * Moves every stage to its corresponding target.
 	 *

@@ -27,6 +27,13 @@ class PID {
 
 	bool isSettled(float error) const;
 
+	void setGains(float kp, float ki, float kd);
+	float getKP() const;
+	float getKI() const;
+	float getKD() const;
+
+	void setThreshold(float threshold);
+
 	void setSlew(float slew);
 	float getSlew() const;
 

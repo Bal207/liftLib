@@ -1,5 +1,7 @@
 #pragma once
 
+#include "liftlib/autotuner.hpp"
+#include "liftlib/feedforward.hpp"
 #include "liftlib/lift.hpp"
 #include "liftlib/motor_config.hpp"
 #include "liftlib/pid.hpp"
@@ -16,8 +18,15 @@
  * reachable unqualified, which keeps existing code working.
  */
 #ifndef LIFTLIB_NO_GLOBAL_NAMES
+using liftlib::AutotuneConfig;
+using liftlib::AutotuneResult;
+using liftlib::AutotuneStatus;
+using liftlib::Autotuner;
+using liftlib::Feedforward;
+using liftlib::GravityModel;
 using liftlib::Lift;
 using liftlib::MotorConfig;
 using liftlib::PID;
 using liftlib::Subsystem;
+using liftlib::TuningRule;
 #endif

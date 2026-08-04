@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "api.h"
+#include "liftlib/feedforward.hpp"
 #include "liftlib/motor_config.hpp"
 #include "liftlib/pid.hpp"
 
@@ -21,6 +22,7 @@ class Subsystem {
 	std::vector<MotorConfig> motorConfigs;
 	std::vector<MotorSlot> motors;
 	PID pid;
+	Feedforward feedforward;
 
 	float minPosition;
 	float maxPosition;
@@ -58,6 +60,30 @@ class Subsystem {
 	virtual void brake();
 
 	/**
+	 * Settles the subsystem at its current position: holds against gravity when
+	 * feedforward is configured, otherwise brakes.
+	 *
+	 * The first call latches the position, so calling this every tick keeps the
+	 * loop closed around one target. A single call latches the holding output
+	 * instead, which is enough to stop a lift sagging after a blocking move.
+	 */
+	virtual void hold();
+
+	/** Forgets the latched hold position so the next hold() latches afresh. */
+	void releaseHold();
+
+	bool isHolding() const;
+
+	/** Drives the motors directly, bypassing the PID. */
+	virtual void setOutput(float output);
+
+	bool hasLimits() const;
+
+	float getMinPosition() const;
+
+	float getMaxPosition() const;
+
+	/**
 	 * Moves the subsystem to a target position.
 	 *
 	 * When async is true (the default) the motion runs in its own task and this
@@ -87,10 +113,27 @@ class Subsystem {
 
 	PID& getPID();
 
+	/**
+	 * Gravity compensation, added to the PID output so the controller does not
+	 * have to build up error before it holds position.
+	 *
+	 * Use Feedforward::constant for a DR4B or cascade, Feedforward::cosine for a
+	 * pivoting arm.
+	 */
+	void setFeedforward(const Feedforward& feedforward);
+
+	Feedforward& getFeedforward();
+
+	/** The holding output at the current position, before any PID term. */
+	float holdOutput() const;
+
    private:
 	float lastError;
 	bool settled;
 	int settleTicks;
+
+	float holdTarget;
+	bool holding;
 
 	std::unique_ptr<pros::Task> task;
 	std::atomic<bool> cancelRequested;

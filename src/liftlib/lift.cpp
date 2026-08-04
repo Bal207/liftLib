@@ -90,6 +90,12 @@ void Lift::brake() {
 	}
 }
 
+void Lift::hold() {
+	for (Subsystem* stage : stages) {
+		stage->hold();
+	}
+}
+
 void Lift::stopStages() {
 	for (Subsystem* stage : stages) {
 		stage->stop();
@@ -110,7 +116,11 @@ void Lift::moveToBlocking(const std::vector<float>& targets, std::uint32_t timeo
 		pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
 	}
 
-	brake();
+	if (cancelRequested.load()) {
+		brake();
+	} else {
+		hold();
+	}
 }
 
 bool Lift::moveTo(const std::vector<float>& targets, bool async, std::uint32_t timeout) {
@@ -152,8 +162,13 @@ void Lift::moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves
 		pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
 	}
 
+	const bool cancelled = cancelRequested.load();
 	for (const std::pair<Subsystem*, float>& move : moves) {
-		move.first->brake();
+		if (cancelled) {
+			move.first->brake();
+		} else {
+			move.first->hold();
+		}
 	}
 }
 

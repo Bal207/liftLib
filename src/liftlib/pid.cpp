@@ -66,6 +66,29 @@ bool PID::isSettled(float error) const {
 	return std::abs(error) < threshold;
 }
 
+void PID::setGains(float kp, float ki, float kd) {
+	KP = kp;
+	KI = ki;
+	KD = kd;
+	reset();
+}
+
+float PID::getKP() const {
+	return KP;
+}
+
+float PID::getKI() const {
+	return KI;
+}
+
+float PID::getKD() const {
+	return KD;
+}
+
+void PID::setThreshold(float threshold) {
+	this->threshold = std::abs(threshold);
+}
+
 void PID::setSlew(float slew) {
 	this->slew = std::abs(slew);
 }
