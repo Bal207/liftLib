@@ -4,26 +4,36 @@
 
 namespace liftlib {
 
-Lift::Lift(std::initializer_list<Subsystem*> stages)
-    : cancelRequested(false), watchStop(false), nextActionId(0), busyBlocking(false) {
-	for (Subsystem* stage : stages) {
-		if (stage != nullptr && !hasStage(stage)) {
-			this->stages.push_back(stage);
-		}
+void Lift::adopt(Mechanism* stage) {
+	if (stage == nullptr || hasStage(stage)) {
+		return;
+	}
+
+	stages.push_back(stage);
+
+	// Remember which stages carry a position so target lists can index them
+	// without tripping over a piston.
+	if (Subsystem* subsystem = stage->asSubsystem()) {
+		positional.push_back(subsystem);
 	}
 }
 
-Lift::Lift(std::vector<Subsystem*> stages)
+Lift::Lift(std::initializer_list<Mechanism*> stages)
     : cancelRequested(false), watchStop(false), nextActionId(0), busyBlocking(false) {
-	for (Subsystem* stage : stages) {
-		if (stage != nullptr && !hasStage(stage)) {
-			this->stages.push_back(stage);
-		}
+	for (Mechanism* stage : stages) {
+		adopt(stage);
+	}
+}
+
+Lift::Lift(std::vector<Mechanism*> stages)
+    : cancelRequested(false), watchStop(false), nextActionId(0), busyBlocking(false) {
+	for (Mechanism* stage : stages) {
+		adopt(stage);
 	}
 }
 
 void Lift::initialize() {
-	for (Subsystem* stage : stages) {
+	for (Mechanism* stage : stages) {
 		stage->initialize();
 	}
 }
@@ -50,9 +60,9 @@ std::vector<std::pair<Subsystem*, float>> Lift::resolve(
 }
 
 void Lift::update(const std::vector<float>& targets) {
-	std::size_t count = std::min(stages.size(), targets.size());
+	std::size_t count = std::min(positional.size(), targets.size());
 	for (std::size_t i = 0; i < count; i++) {
-		stages[i]->update(targets[i]);
+		positional[i]->update(targets[i]);
 	}
 }
 
@@ -63,7 +73,7 @@ void Lift::update(const std::vector<std::pair<Subsystem*, float>>& moves) {
 }
 
 bool Lift::isSettled() const {
-	for (const Subsystem* stage : stages) {
+	for (const Mechanism* stage : stages) {
 		if (!stage->isSettled()) {
 			return false;
 		}
@@ -81,34 +91,46 @@ bool Lift::isSettled(const std::vector<std::pair<Subsystem*, float>>& moves) con
 }
 
 void Lift::reset() {
-	for (Subsystem* stage : stages) {
+	for (Mechanism* stage : stages) {
 		stage->reset();
 	}
 }
 
 void Lift::brake() {
-	for (Subsystem* stage : stages) {
+	for (Mechanism* stage : stages) {
 		stage->brake();
 	}
 }
 
 void Lift::hold() {
-	for (Subsystem* stage : stages) {
+	for (Mechanism* stage : stages) {
 		stage->hold();
 	}
 }
 
 void Lift::stopStages() {
-	for (Subsystem* stage : stages) {
+	// Only the positional stages. A piston has no motion to halt, and stopping
+	// one declares its travel over, which would make a cylinder that is still
+	// moving report settled just because something else was stopped.
+	for (Subsystem* stage : positional) {
 		stage->stop();
 	}
 }
 
-void Lift::claimStages(const std::vector<Subsystem*>& claimed, bool blocking) {
+void Lift::claimStages(const std::vector<Mechanism*>& claimed, bool blocking) {
 	busyMutex.take(TIMEOUT_MAX);
 	busyStages = claimed;
 	busyBlocking = blocking;
 	busyMutex.give();
+}
+
+void Lift::claimStages(const std::vector<Subsystem*>& claimed, bool blocking) {
+	std::vector<Mechanism*> widened;
+	widened.reserve(claimed.size());
+	for (Subsystem* stage : claimed) {
+		widened.push_back(stage);
+	}
+	claimStages(widened, blocking);
 }
 
 void Lift::releaseStages() {
@@ -118,7 +140,7 @@ void Lift::releaseStages() {
 	busyMutex.give();
 }
 
-bool Lift::canRunNow(Precedence precedence, const std::vector<Subsystem*>& wanted) const {
+bool Lift::canRunNow(Precedence precedence, const std::vector<Mechanism*>& wanted) const {
 	if (precedence == Precedence::Absolute) {
 		return true;
 	}
@@ -131,7 +153,7 @@ bool Lift::canRunNow(Precedence precedence, const std::vector<Subsystem*>& wante
 			// An action that names no stage speaks for all of them.
 			overlaps = true;
 		} else {
-			for (Subsystem* stage : wanted) {
+			for (Mechanism* stage : wanted) {
 				if (std::find(busyStages.begin(), busyStages.end(), stage) != busyStages.end()) {
 					overlaps = true;
 					break;
@@ -157,15 +179,15 @@ bool Lift::canRunNow(Precedence precedence, const std::vector<Subsystem*>& wante
 }
 
 int Lift::addConditionalAction(std::function<bool()> condition, std::function<void()> action,
-                               Precedence precedence, std::vector<Subsystem*> stages) {
+                               Precedence precedence, std::vector<Mechanism*> stages) {
 	if (condition == nullptr || action == nullptr) {
 		return 0;
 	}
 
 	// Drop anything that is not part of this lift so precedence cannot be judged
 	// against a stage the lift does not drive.
-	std::vector<Subsystem*> owned;
-	for (Subsystem* stage : stages) {
+	std::vector<Mechanism*> owned;
+	for (Mechanism* stage : stages) {
 		if (stage != nullptr && hasStage(stage) &&
 		    std::find(owned.begin(), owned.end(), stage) == owned.end()) {
 			owned.push_back(stage);
@@ -293,7 +315,7 @@ void Lift::watchConditions() {
 		std::uint32_t now = pros::millis();
 		while (!watchStop.load()) {
 			pollActions();
-			pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
+			pros::Task::delay_until(&now, Mechanism::LOOP_DELAY_MS);
 		}
 	});
 }
@@ -314,46 +336,67 @@ bool Lift::isWatching() const {
 }
 
 void Lift::moveToBlocking(const std::vector<float>& targets, std::uint32_t timeout) {
-	reset();
+	for (Subsystem* stage : positional) {
+		stage->reset();
+	}
 
 	std::uint32_t start = pros::millis();
 	std::uint32_t now = start;
 
-	while (!isSettled() && !cancelRequested.load()) {
+	// Wait on the stages this move drives, not on every stage, so an unrelated
+	// piston mid-travel cannot hold the move open.
+	const auto settled = [this]() {
+		for (const Subsystem* stage : positional) {
+			if (!stage->isSettled()) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	while (!settled() && !cancelRequested.load()) {
 		if (timeout != NO_TIMEOUT && pros::millis() - start >= timeout) {
 			break;
 		}
 		update(targets);
-		pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
+		pros::Task::delay_until(&now, Mechanism::LOOP_DELAY_MS);
 	}
 
-	if (cancelRequested.load()) {
-		brake();
-	} else {
-		hold();
+	const bool cancelled = cancelRequested.load();
+	for (Subsystem* stage : positional) {
+		if (cancelled) {
+			stage->brake();
+		} else {
+			stage->hold();
+		}
 	}
 }
 
 bool Lift::moveTo(const std::vector<float>& targets, bool async, std::uint32_t timeout) {
-	if (targets.size() < stages.size()) {
+	if (positional.empty() || targets.size() < positional.size()) {
 		return false;
 	}
 
 	cancelTask();
-	stopStages();
 
-	std::vector<float> owned(targets.begin(), targets.begin() + stages.size());
+	// Only stop what this move drives. Stopping a piston here would be wrong
+	// anyway, but it also has no business being cancelled by an arm move.
+	for (Subsystem* stage : positional) {
+		stage->stop();
+	}
+
+	std::vector<float> owned(targets.begin(), targets.begin() + positional.size());
 
 	if (!async) {
 		cancelRequested.store(false);
-		claimStages(stages, true);
+		claimStages(positional, true);
 		moveToBlocking(owned, timeout);
 		releaseStages();
 		return true;
 	}
 
 	cancelRequested.store(false);
-	claimStages(stages, false);
+	claimStages(positional, false);
 	task = std::make_unique<pros::Task>([this, owned, timeout]() {
 		moveToBlocking(owned, timeout);
 		releaseStages();
@@ -375,7 +418,7 @@ void Lift::moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves
 			break;
 		}
 		update(moves);
-		pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
+		pros::Task::delay_until(&now, Mechanism::LOOP_DELAY_MS);
 	}
 
 	const bool cancelled = cancelRequested.load();
@@ -453,7 +496,7 @@ bool Lift::waitUntilSettled(std::uint32_t timeout) {
 			stop();
 			return false;
 		}
-		pros::Task::delay_until(&now, Subsystem::LOOP_DELAY_MS);
+		pros::Task::delay_until(&now, Mechanism::LOOP_DELAY_MS);
 	}
 
 	task->join();
@@ -477,26 +520,34 @@ Lift::~Lift() {
 	cancelTask();
 }
 
-bool Lift::hasStage(Subsystem* stage) const {
+bool Lift::hasStage(Mechanism* stage) const {
 	return std::find(stages.begin(), stages.end(), stage) != stages.end();
 }
 
 bool Lift::moveStageTo(std::size_t index, float target, bool async, std::uint32_t timeout) {
-	if (index >= stages.size()) {
+	if (index >= positional.size()) {
 		return false;
 	}
 
 	cancelTask();
-	stages[index]->moveTo(target, async, timeout);
+	positional[index]->moveTo(target, async, timeout);
 	return true;
 }
 
-Subsystem* Lift::getStage(std::size_t index) const {
+Mechanism* Lift::getStage(std::size_t index) const {
 	return index < stages.size() ? stages[index] : nullptr;
 }
 
 std::size_t Lift::stageCount() const {
 	return stages.size();
+}
+
+Subsystem* Lift::getPositionalStage(std::size_t index) const {
+	return index < positional.size() ? positional[index] : nullptr;
+}
+
+std::size_t Lift::positionalStageCount() const {
+	return positional.size();
 }
 
 }  

@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "api.h"
+#include "liftlib/mechanism.hpp"
+#include "liftlib/piston.hpp"
 #include "liftlib/subsystem.hpp"
 
 namespace liftlib {
@@ -39,10 +41,13 @@ struct ConditionalAction {
 	 * Stages the action drives. Precedence is judged against these only, so a
 	 * claw action is unaffected by a move that is busy with the lift.
 	 *
+	 * Any mechanism the lift owns can be named, pistons included, so an action
+	 * that fires a clamp is not held up by a move on the arm.
+	 *
 	 * Leave it empty to mean every stage, which is the safe reading for an
 	 * action that stops the whole lift.
 	 */
-	std::vector<Subsystem*> stages;
+	std::vector<Mechanism*> stages;
 
 	/** Identifies the action so it can be removed later. */
 	int id = 0;
@@ -50,10 +55,16 @@ struct ConditionalAction {
 
 class Lift {
    private:
-	std::vector<Subsystem*> stages;
+	/** Everything the lift owns, in the order it was given. */
+	std::vector<Mechanism*> stages;
+
+	/** The subset that has a position, in stage order. Targets index into this. */
+	std::vector<Subsystem*> positional;
 
 	std::vector<std::pair<Subsystem*, float>> resolve(
 	    const std::vector<std::pair<Subsystem*, float>>& moves) const;
+
+	void adopt(Mechanism* stage);
 
 	std::unique_ptr<pros::Task> task;
 	std::atomic<bool> cancelRequested;
@@ -66,7 +77,7 @@ class Lift {
 
 	void moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves,
 	                    std::uint32_t timeout);
-	
+
 	std::vector<ConditionalAction> conditionalActions;
 	std::vector<bool> conditionWasTrue;
 	std::vector<bool> actionPending;
@@ -76,7 +87,7 @@ class Lift {
 	int nextActionId;
 
 	/** Stages the current move owns, and whether that move is blocking. */
-	std::vector<Subsystem*> busyStages;
+	std::vector<Mechanism*> busyStages;
 	bool busyBlocking;
 	mutable pros::Mutex busyMutex;
 
@@ -84,19 +95,21 @@ class Lift {
 
 	void pollActions();
 
+	void claimStages(const std::vector<Mechanism*>& claimed, bool blocking);
+
 	void claimStages(const std::vector<Subsystem*>& claimed, bool blocking);
 
 	void releaseStages();
 
-	bool canRunNow(Precedence precedence, const std::vector<Subsystem*>& wanted) const;
+	bool canRunNow(Precedence precedence, const std::vector<Mechanism*>& wanted) const;
 
    public:
 
-	static constexpr std::uint32_t NO_TIMEOUT = Subsystem::NO_TIMEOUT;
+	static constexpr std::uint32_t NO_TIMEOUT = Mechanism::NO_TIMEOUT;
 
-	Lift(std::initializer_list<Subsystem*> stages);
+	Lift(std::initializer_list<Mechanism*> stages);
 
-	explicit Lift(std::vector<Subsystem*> stages);
+	explicit Lift(std::vector<Mechanism*> stages);
 
 	Lift(const Lift&) = delete;
 	Lift& operator=(const Lift&) = delete;
@@ -138,7 +151,7 @@ class Lift {
 	 * rejected.
 	 */
 	int addConditionalAction(std::function<bool()> condition, std::function<void()> action,
-	                         Precedence precedence, std::vector<Subsystem*> stages);
+	                         Precedence precedence, std::vector<Mechanism*> stages);
 
 	int addConditionalAction(std::function<bool()> condition, std::function<void()> action,
 	                         Precedence precedence = Precedence::Low);
@@ -169,13 +182,17 @@ class Lift {
 	void checkConditions();
 
 	/**
-	 * Moves every stage to its corresponding target.
+	 * Moves every positional stage to its corresponding target.
+	 *
+	 * Targets line up with the stages that have a position, in the order they
+	 * were given to the constructor. Pistons are skipped rather than counted,
+	 * so a lift of {arm, clamp, claw} takes two targets, for the arm and claw.
 	 *
 	 * When async is true (the default) the motion runs in its own task and this
 	 * call returns immediately. When async is false the call blocks until every
 	 * stage settles or the timeout elapses.
 	 *
-	 * Returns false when the target count does not cover every stage.
+	 * Returns false when the target count does not cover every positional stage.
 	 *
 	 * Starting a new move cancels any async move already in progress.
 	 */
@@ -196,6 +213,7 @@ class Lift {
 	bool moveTo(std::initializer_list<std::pair<Subsystem*, float>> moves, bool async = true,
 	            std::uint32_t timeout = NO_TIMEOUT);
 
+	/** Indexes the positional stages, skipping any piston. */
 	bool moveStageTo(std::size_t index, float target, bool async = true,
 	                 std::uint32_t timeout = NO_TIMEOUT);
 
@@ -214,11 +232,17 @@ class Lift {
 	/** True while an async move is still running. */
 	bool isMoving() const;
 
-	bool hasStage(Subsystem* stage) const;
+	bool hasStage(Mechanism* stage) const;
 
-	Subsystem* getStage(std::size_t index) const;
+	/** Indexes every stage, pistons included, in constructor order. */
+	Mechanism* getStage(std::size_t index) const;
 
 	std::size_t stageCount() const;
+
+	/** Indexes only the stages that have a position, in stage order. */
+	Subsystem* getPositionalStage(std::size_t index) const;
+
+	std::size_t positionalStageCount() const;
 };
 
 }  // namespace liftlib

@@ -7,11 +7,12 @@ An extremely easy to use yet dynamic library for vexV5 Lifts.
 ## Features
 
 - Motor groups with per-motor gear ratios and brake modes
+- Voltage control by default, on the familiar -127 to 127 scale
 - PID with integral clamping, integral zone, output limiting, and slew
-- Output limits derived automatically from each motor's gearset
+- Position from the motor encoders or any sensor you plug in
 - Blocking and async moves, with timeouts on every move
 - Soft position limits per subsystem
-- Multi-stage coordination through `Lift`
+- Multi-stage coordination through `Lift`, pistons included
 - Gravity compensation for lifts and pivoting arms
 - Automatic PID tuning by relay feedback
 
@@ -55,6 +56,65 @@ void autonomous() {
 `gear_ratio` converts motor degrees into whatever unit you want to command in.
 Leave it at `1` to work in motor degrees.
 
+### 5.5W motors
+
+State the type when a port holds a 5.5W (EXP) motor rather than the 11W:
+
+```cpp
+MotorConfig small{7, 1.0f, pros::E_MOTOR_BRAKE_HOLD,
+                  pros::MotorGears::green, liftlib::MotorType::W5_5};
+```
+
+The two motors differ in torque, not speed. A 5.5W with a 200 RPM cartridge free
+spins as fast as an 11W with a green one, so the velocity ceiling is unchanged;
+what differs is that it stalls at roughly half the torque and heats up sooner.
+
+Because of that, **a 5.5W needs no special handling on its own**. In voltage mode
+a full command is ±12000 mV to either motor, and each contributes whatever it
+physically can. A subsystem of nothing but 5.5W motors is commanded exactly like
+one of 11W motors.
+
+Mixing the two in one group also works by default: both get the same command, so
+the 11W naturally does more of the work. Turn on torque sharing only if the 5.5W
+is the one overheating:
+
+```cpp
+lift.setTorqueSharing(true);   // scales the 5.5W's command to half
+```
+
+That makes the 11W carry proportionally more, at the cost of some total output.
+It does nothing in a group of one motor type, so it is safe to set
+unconditionally.
+
+`isMixedGroup()` and `motorCountOfType()` report what the group holds.
+
+`MotorType` is only reachable as `liftlib::MotorType`, since `pros` has a type of
+the same name.
+
+### Reading position from a sensor
+
+By default a subsystem averages its motor encoders. A rotation sensor or
+potentiometer mounted on the joint sees the mechanism directly, so it does not
+accumulate the backlash and slip between the motor and the load:
+
+```cpp
+pros::Rotation armSensor(11);
+
+arm.setPositionSource([&] { return armSensor.get_angle() / 100.0f; });
+```
+
+The callback returns the position in the same units you use for targets and soft
+limits. Gear ratios are not applied to it, since the sensor already reads the
+output side of the gearing.
+
+Set the source before `initialize()`. With a source configured, `initialize()`
+stops taring the motors, because taring would move the encoder zero without
+moving the zero the subsystem actually reads, silently shifting the soft limits.
+
+The callback runs once per control tick from whichever task is driving the
+subsystem, so keep it cheap, and make sure anything it captures by reference
+outlives the subsystem. `clearPositionSource()` goes back to the encoders.
+
 ### Blocking, async, and timeouts
 
 ```cpp
@@ -74,11 +134,35 @@ A move is settled once the error stays inside the PID threshold for
 `SETTLE_COUNT` consecutive 20 ms ticks, so passing through the target at speed
 does not count as settled.
 
+### Output units
+
+Output is a -127 to 127 command applied as voltage, the same scale
+`pros::Motor::move` uses. 127 is full power in the direction you asked for.
+
+Voltage is the default because it is open loop: the only controller in the path
+is the one in this library. In velocity mode the V5 firmware runs its own loop
+inside yours, which fights a tightly tuned PID and is a common cause of a lift
+that feels sluggish no matter how it is tuned.
+
+Switch a subsystem over if you want the motor holding a velocity for you:
+
+```cpp
+arm.setOutputMode(OutputMode::Velocity);   // output is now RPM
+```
+
+In velocity mode the range is the cartridge's: 100 for red, 200 for green, 600
+for blue, taken from the slowest motor in the group.
+
+The two modes have different units, so **gains do not carry across a mode
+change**. Retune kP, kD, and kG after switching. `setOutputMode` rescales the
+PID's output limit for you when it still holds the value the subsystem derived,
+but a limit you set yourself is left alone, since only you know what it meant.
+
 ### Driving a subsystem by hand
 
 `setOutput` skips the PID and commands the motors directly, which is what you
 want for driver control. The value is clamped to the same output limit the PID
-uses, so you cannot ask for more than the gearset can give:
+uses, so you cannot ask for more than the mode allows:
 
 ```cpp
 void opcontrol() {
@@ -87,9 +171,9 @@ void opcontrol() {
         int down = master.get_digital(DIGITAL_L2);
 
         if (up) {
-            arm.setOutput(150);
+            arm.setOutput(127);
         } else if (down) {
-            arm.setOutput(-150);
+            arm.setOutput(-127);
         } else {
             arm.hold();       // stays put instead of dropping
         }
@@ -105,7 +189,7 @@ yourself:
 
 ```cpp
 if (up && arm.getPosition() < arm.getMaxPosition()) {
-    arm.setOutput(150);
+    arm.setOutput(127);
 }
 ```
 
@@ -136,6 +220,54 @@ void autonomous() {
 already in progress, including seperate stage movements on the stages it is about to
 drive. Do not drive a stage directly while a group move that includes it is
 running.
+
+### Pneumatics
+
+A `Piston` is a `Lift` stage like any other, so a clamp or a set of wings can sit
+alongside the motorised stages and be named in a conditional action:
+
+```cpp
+Piston clamp(PistonConfig{'A'});
+Piston wings({{'B'}, {'C', true}});   // two solenoids, the second reversed
+
+Lift robot{&arm, &claw, &clamp, &wings};
+
+clamp.extend();
+clamp.retract();
+clamp.toggle();
+clamp.isExtended();
+```
+
+Set `reversed` when a cylinder retracts on a high signal, and `startExtended`
+for the state the port should be driven to at startup.
+
+A piston has no position, so it never takes a numeric target. Target lists cover
+only the stages that have one, in the order you gave them:
+
+```cpp
+Lift robot{&arm, &clamp, &claw};
+
+robot.moveTo({20, 90});   // arm and claw; the clamp is skipped, not counted
+```
+
+`stageCount()` counts everything, `positionalStageCount()` counts only what can
+take a target. `getStage()` indexes the first, `getPositionalStage()` the second.
+
+There is no sensor on a cylinder, so a piston reports settled once it has had
+time to travel. That time is the one number worth setting per mechanism:
+
+```cpp
+Piston clamp(PistonConfig{'A'}, 300);   // 300 ms of travel
+clamp.setActuationTime(180);
+
+clamp.extend(false);            // blocks for the actuation time
+clamp.waitUntilSettled(500);    // or wait on an async one
+```
+
+`brake()` and `hold()` do nothing on a piston: air holds the cylinder without
+power, and dropping the signal would move it rather than stop it. `stop()` does
+not cut the signal either, it just reports the travel as over so a stopped lift
+does not sit waiting on a stage that cannot be stopped.
 
 ### Conditional actions
 
@@ -236,13 +368,12 @@ adding and removing other actions from inside an action is fine.
 
 ### Tuning
 
-`Subsystem` sets the PID output limit from the slowest motor's gearset (100 for
-red, 200 for green, 600 for blue), so the controller cannot ask for more velocity
-than the motor can deliver. Override it, and the rest of the PID, through
-`getPID()`:
+`Subsystem` sets the PID output limit from the output mode: 127 in voltage mode,
+or the slowest motor's gearset in velocity mode. Override it, and the rest of the
+PID, through `getPID()`:
 
 ```cpp
-arm.getPID().setMaxOutput(150);
+arm.getPID().setMaxOutput(100);
 arm.getPID().setIntegralZone(10);   // only integrate within 10 units of target
 arm.getPID().setMaxIntegral(50);
 arm.getPID().setSlew(5);            // max output change per tick
@@ -290,6 +421,19 @@ the subsystem already works in arm degrees.
 
 To find `kG`, raise the mechanism to mid-range and increase the value until it
 just stops sinking. Overshoot it and the lift creeps upward.
+
+The gravity term and the PID share one output range, so a large `kG` on a heavy
+mechanism can eat most of it and leave the controller unable to push any further
+in that direction. The feedforward is capped at 80% of the output limit to stop
+that, which always leaves the PID a fifth of the range:
+
+```cpp
+arm.setFeedforwardHeadroom(0.9f);   // let gravity claim more
+```
+
+Needing much above the default usually means the mechanism is geared too fast for
+what it carries. `holdOutput()` reports the capped value, so it always matches
+what the controller is actually applying.
 
 With feedforward set, a finished move ends in `hold()` rather than a plain brake.
 The loop stays closed around the position it stopped at, so an imperfect `kG` is
@@ -454,14 +598,39 @@ liftlib::Subsystem arm({left, right}, armPid);
 include/liftlib/     public headers (shipped in the template)
   liftlib.hpp        umbrella header
   lift.hpp           multi-stage coordination
+  mechanism.hpp      what a Lift stage has to be
   subsystem.hpp      one motor group under PID
+  piston.hpp         a pneumatic stage
   pid.hpp            the controller
   feedforward.hpp    gravity compensation
   autotuner.hpp      relay-feedback PID tuning
   motor_config.hpp   per-motor port, ratio, brake mode, gearset
+  output_mode.hpp    voltage or velocity output
 src/liftlib/         implementation
 src/main.cpp         demo entry points, excluded from the template
 ```
+
+## Upgrading
+
+Output moved from velocity to voltage, so **existing gains do not carry over**.
+A kP that was tuned against a 0-200 velocity range now drives a 0-127 voltage
+range, and the motor no longer runs its own loop underneath yours.
+
+Retune, or put the subsystem back the way it was:
+
+```cpp
+arm.setOutputMode(OutputMode::Velocity);
+```
+
+`kG` moves with it, so retune gravity compensation too, and autotune afterwards
+rather than reusing a stored result.
+
+`Lift` now holds `Mechanism*` rather than `Subsystem*`, so that pistons can be
+stages. Existing code that passes subsystems is unaffected, but the accessors
+split in two: `getStage()` returns a `Mechanism*` covering every stage, and
+`getPositionalStage()` returns a `Subsystem*` covering the ones that take
+targets. Code that used the `Subsystem*` from `getStage()` should move to
+`getPositionalStage()`.
 
 ## Requirements
 

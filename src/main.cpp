@@ -61,14 +61,21 @@ MotorConfig liftMotorTwo{-7, LIFT_RATIO, pros::E_MOTOR_BRAKE_HOLD};
 MotorConfig clawRotationConfig{9, 0.2};
 
 PID claw_pid(1, 0, 0, 1);
-PID lift_pid(5, 0, 0, 1);
+PID lift_pid(2, 0, 0, 1);
 PID claw_rotation_pid(1, 0, 0, 1);
 
 Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 55);
 Subsystem claw({motor1}, claw_pid, 0, 180);
 Subsystem clawRotator({clawRotationConfig}, claw_rotation_pid, -85, 85);
 
-Lift cascade{&liftStage, &claw, &clawRotator};
+// A clamp on ADI port A. It has no position, so it never takes a target.
+Piston clamp(PistonConfig{'A'});
+
+// The lift stage reads its angle from a rotation sensor on the pivot rather
+// than the motor encoders, so gear backlash does not show up as position error.
+pros::Rotation liftSensor(11);
+
+Lift cascade{&liftStage, &claw, &clawRotator, &clamp};
 
 void tuneLiftStage() {
   liftStage.initialize();
@@ -109,15 +116,29 @@ bool clawIsOverExtended() { return claw.getPosition() > 175; }
 void retractClaw() { claw.moveTo(150, false, 500); }
 
 void autonomous() {
+  // Read the lift angle from the sensor on the joint. Set this before
+  // initialize(), so it knows not to tare the motors against a zero the sensor
+  // does not share.
+  liftStage.setPositionSource(
+      [] { return static_cast<float>(liftSensor.get_angle()) / 100.0f; });
+
   cascade.initialize();
 
   // Scoped to the claw, so it still fires while the lift stage is moving.
   cascade.addConditionalAction(clawIsOverExtended, retractClaw, Precedence::Absolute,
                                {&claw});
+
+  // Scoped to the clamp, so it fires even mid-move on the lift.
+  cascade.addConditionalAction([] { return liftStage.getPosition() > 40; },
+                               [] { clamp.extend(); }, Precedence::High,
+                               {&clamp});
+
   cascade.watchConditions();
 
   cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false,
                  3000);
+
+  clamp.retract(false); // blocks for the actuation time
 
   cascade.stopWatching();
 }
