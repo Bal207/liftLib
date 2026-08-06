@@ -74,4 +74,4 @@ bool Feedforward::isEnabled() const {
 	return model != GravityModel::None && kG != 0;
 }
 
-}  // namespace liftlib
+}  

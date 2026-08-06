@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <utility>
@@ -11,6 +12,41 @@
 #include "liftlib/subsystem.hpp"
 
 namespace liftlib {
+
+/** How hard a conditional action pushes against motion that is already running. */
+enum class Precedence {
+	/** Never interrupts. Runs only while the lift is idle. */
+	Low = 0,
+	/** Waits its turn, then runs once the current move finishes. */
+	Medium = 1,
+	/** Interrupts an async move, but waits for a blocking one. */
+	High = 2,
+	/** Interrupts anything, including a blocking move. */
+	Absolute = 3,
+};
+
+/** Something to do when a condition becomes true. */
+struct ConditionalAction {
+	/** Checked every tick. The action fires on a false to true change. */
+	std::function<bool()> condition;
+
+	/** Run when the condition fires. Keep it short, it runs on the poll task. */
+	std::function<void()> action;
+
+	Precedence precedence = Precedence::Low;
+
+	/**
+	 * Stages the action drives. Precedence is judged against these only, so a
+	 * claw action is unaffected by a move that is busy with the lift.
+	 *
+	 * Leave it empty to mean every stage, which is the safe reading for an
+	 * action that stops the whole lift.
+	 */
+	std::vector<Subsystem*> stages;
+
+	/** Identifies the action so it can be removed later. */
+	int id = 0;
+};
 
 class Lift {
    private:
@@ -30,8 +66,32 @@ class Lift {
 
 	void moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves,
 	                    std::uint32_t timeout);
+	
+	std::vector<ConditionalAction> conditionalActions;
+	std::vector<bool> conditionWasTrue;
+	std::vector<bool> actionPending;
+
+	std::unique_ptr<pros::Task> watchTask;
+	std::atomic<bool> watchStop;
+	int nextActionId;
+
+	/** Stages the current move owns, and whether that move is blocking. */
+	std::vector<Subsystem*> busyStages;
+	bool busyBlocking;
+	mutable pros::Mutex busyMutex;
+
+	mutable pros::Mutex actionMutex;
+
+	void pollActions();
+
+	void claimStages(const std::vector<Subsystem*>& claimed, bool blocking);
+
+	void releaseStages();
+
+	bool canRunNow(Precedence precedence, const std::vector<Subsystem*>& wanted) const;
 
    public:
+
 	static constexpr std::uint32_t NO_TIMEOUT = Subsystem::NO_TIMEOUT;
 
 	Lift(std::initializer_list<Subsystem*> stages);
@@ -59,6 +119,54 @@ class Lift {
 
 	/** Settles every stage, holding against gravity where it is configured. */
 	void hold();
+
+	/**
+	 * Runs an action whenever a condition becomes true.
+	 *
+	 * The condition is polled every 20 ms once watchConditions() is running, and
+	 * the action fires on the change from false to true rather than for as long
+	 * as the condition holds.
+	 *
+	 * Precedence is judged only against the stages the action names, so an action
+	 * on the claw is unaffected by a move that is busy with the lift. Naming no
+	 * stages means every stage, which is what a full stop wants.
+	 *
+	 * Low only runs while its stages are free, Medium waits for them, High
+	 * interrupts an async move on them, and Absolute interrupts a blocking one.
+	 *
+	 * Returns an id for removeConditionalAction(), or 0 if the action was
+	 * rejected.
+	 */
+	int addConditionalAction(std::function<bool()> condition, std::function<void()> action,
+	                         Precedence precedence, std::vector<Subsystem*> stages);
+
+	int addConditionalAction(std::function<bool()> condition, std::function<void()> action,
+	                         Precedence precedence = Precedence::Low);
+
+	int addConditionalAction(const ConditionalAction& action);
+
+	/** Returns false when no action carries that id. */
+	bool removeConditionalAction(int id);
+
+	void clearConditionalActions();
+
+	std::size_t conditionalActionCount() const;
+
+	/** Starts polling conditions in their own task. Safe to call twice. */
+	void watchConditions();
+
+	/** Stops the polling task. Registered actions are kept. */
+	void stopWatching();
+
+	bool isWatching() const;
+
+	/**
+	 * Polls every condition once and runs whatever is due.
+	 *
+	 * Call this yourself from an existing loop instead of watchConditions() when
+	 * you would rather not spend a task on it.
+	 */
+	void checkConditions();
 
 	/**
 	 * Moves every stage to its corresponding target.

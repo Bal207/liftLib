@@ -137,6 +137,103 @@ already in progress, including seperate stage movements on the stages it is abou
 drive. Do not drive a stage directly while a group move that includes it is
 running.
 
+### Conditional actions
+
+A conditional action runs a piece of code when a condition becomes true. Use it
+for the things you would otherwise scatter through opcontrol: stop the lift at a
+hard stop, retract the claw when a sensor trips, park the arm when a button is
+held.
+
+```cpp
+lift.addConditionalAction(
+    [] { return limitSwitch.get_value(); },   // condition
+    [&] { lift.stop(); },                     // what to do
+    Precedence::Absolute);                    // how hard it pushes
+
+lift.watchConditions();   // start polling in its own task
+```
+
+Conditions are checked every 20 ms. An action fires on the change from false to
+true, not for as long as the condition stays true, so a switch that stays pressed
+fires once. Let it go false and it arms again.
+
+`addConditionalAction` gives back an id you can use later:
+
+```cpp
+int id = lift.addConditionalAction(cond, act, Precedence::Medium);
+
+lift.removeConditionalAction(id);
+lift.clearConditionalActions();
+lift.conditionalActionCount();
+```
+
+If you would rather not spend a task on polling, call `checkConditions()` from a
+loop you already have:
+
+```cpp
+while (true) {
+    lift.checkConditions();
+    pros::delay(20);
+}
+```
+
+#### Which stages an action touches
+
+Precedence is judged per subsystem, not across the whole lift. Name the stages an
+action drives and it is only ever held up by moves that touch those same stages:
+
+```cpp
+lift.addConditionalAction(cond, act, Precedence::Medium, {&claw});
+```
+
+A claw action carries on regardless of what the lift stage is doing, even during
+a blocking move, because they do not share a subsystem. Only an overlap matters,
+so an action on `{&claw, &liftStage}` does wait for a move on the lift stage.
+
+Leave the stage list off and the action counts as touching everything, which is
+what you want for a full stop:
+
+```cpp
+lift.addConditionalAction(emergency, [&]{ lift.stop(); }, Precedence::Absolute);
+```
+
+Stages that are not part of the lift are rejected, and `addConditionalAction`
+returns 0.
+
+#### Precedence
+
+Precedence decides what happens when a condition fires while the stages it wants
+are already busy.
+
+| Level | Stages free | Busy with an async move | Busy with a blocking move |
+| --- | --- | --- | --- |
+| `Low` | runs | dropped | dropped |
+| `Medium` | runs | runs after the move | runs after the move |
+| `High` | runs | runs straight away | runs after the move |
+| `Absolute` | runs | runs straight away | runs straight away |
+
+`Low` is the default and the most polite. It only runs when its stages are free,
+and if they are busy when the condition fires the action is dropped rather than
+saved for later. Good for things that stop being worth doing the moment they are
+late, like a convenience move that the driver has already overridden.
+
+`Medium` waits its turn. The action is remembered and runs once the move on those
+stages finishes, so nothing gets lost.
+
+`High` cuts in front of an async move but still respects a blocking one, which
+matters because a blocking move is usually an auton routine part way through a
+sequence.
+
+`Absolute` runs no matter what, and is the one level that ignores stage scoping
+entirely. Save it for safety: a hard stop, a limit switch, anything where waiting
+would break something.
+
+`High` is allowed to run during an async move but does not cancel it for you. If
+the action needs the mechanism to itself, call `lift.stop()` inside it.
+
+Actions run on the polling task, so keep them short. Calling `moveTo`, `stop`, or
+adding and removing other actions from inside an action is fine.
+
 ### Tuning
 
 `Subsystem` sets the PID output limit from the slowest motor's gearset (100 for

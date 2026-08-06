@@ -103,11 +103,23 @@ void tuneLiftStage() {
  * will be stopped. Re-enabling the robot will restart the task, not re-start it
  * from where it left off.
  */
+
+bool clawIsOverExtended() { return claw.getPosition() > 175; }
+
+void retractClaw() { claw.moveTo(150, false, 500); }
+
 void autonomous() {
   cascade.initialize();
 
+  // Scoped to the claw, so it still fires while the lift stage is moving.
+  cascade.addConditionalAction(clawIsOverExtended, retractClaw, Precedence::Absolute,
+                               {&claw});
+  cascade.watchConditions();
+
   cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false,
                  3000);
+
+  cascade.stopWatching();
 }
 
 /**
