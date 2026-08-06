@@ -392,8 +392,7 @@ config.rule = TuningRule::NoOvershoot;
 
 Pick the rule to suit the mechanism. `ZieglerNicholsPID` (the default) is
 responsive but overshoots a little; `NoOvershoot` and `SomeOvershoot` trade speed
-for a gentler approach, which is usually what you want on a lift carrying game
-elements.
+for a gentler approach, which usually works best for most lifts.
 
 When a run fails, `result.status` says why:
 
