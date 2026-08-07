@@ -395,6 +395,10 @@ AutotuneResult Autotuner::runAndApply(const AutotuneConfig& config) {
 	AutotuneResult result = run(config);
 
 	if (result.success) {
+		// A schedule reselects gains every tick, which would overwrite the tune
+		// before it ever drove the mechanism. The tune measured one set of gains
+		// at one position, so it replaces the schedule rather than joining it.
+		subsystem.clearGainSchedule();
 		subsystem.getPID().setGains(result.kp, result.ki, result.kd);
 	}
 

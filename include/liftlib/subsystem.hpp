@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "api.h"
@@ -22,9 +23,32 @@ struct MotorSlot final {
 };
 
 class Subsystem : public Mechanism {
+   public:
+	/**
+	 * One set of gains and the position they were tuned at.
+	 *
+	 * Written as {pid, position} so a schedule reads as a list of pairs:
+	 *
+	 *   {{PID(0.5, 0, 2, 1), 0}, {PID(1.4, 0, 5, 1), 90}}
+	 */
+	using GainPoint = std::pair<PID, float>;
+
    protected:
 	std::vector<MotorConfig> motorConfigs;
 	std::vector<MotorSlot> motors;
+
+	/**
+	 * Gain points sorted by position, empty when no schedule is active.
+	 *
+	 * Declared before pid because the scheduling constructors derive pid from
+	 * it, and members initialize in declaration order.
+	 *
+	 * Only kP, kI, and kD are read from these; every other PID setting lives on
+	 * the live controller, so tuning a threshold or a slew after construction is
+	 * not undone by the next gain selection.
+	 */
+	std::vector<GainPoint> gainSchedule;
+
 	PID pid;
 	Feedforward feedforward;
 
@@ -51,6 +75,43 @@ class Subsystem : public Mechanism {
 	Subsystem(std::vector<MotorConfig> motorConfigs, PID pid);
 
 	Subsystem(std::vector<MotorConfig> motorConfigs, PID pid, float minPosition, float maxPosition);
+
+	/**
+	 * Schedules gains by position, for a mechanism that needs different tuning
+	 * at different points in its travel.
+	 *
+	 * A lift is usually floppier extended than retracted, so one set of gains is
+	 * either too soft at the top or too aggressive at the bottom. Tune a PID at
+	 * each of a few heights and pass them with the position each was tuned at:
+	 *
+	 *   Subsystem arm({motors}, {
+	 *       {PID(0.5f, 0, 2.0f, 1), 0},
+	 *       {PID(0.9f, 0, 3.0f, 1), 45},
+	 *       {PID(1.4f, 0, 5.0f, 1), 90},
+	 *   });
+	 *
+	 * kP, kI, and kD are interpolated linearly between the two surrounding
+	 * points, so gains change smoothly rather than stepping at a boundary.
+	 * Outside the outermost points the nearest one's gains are held flat.
+	 *
+	 * Points may be given in any order; they are sorted by position. Two points
+	 * at the same position are a contradiction about what the gains there are,
+	 * so the later one is dropped.
+	 *
+	 * Everything other than kP, kI, and kD is taken from the point nearest the
+	 * bottom of the travel and applies throughout: threshold, slew, integral
+	 * limits, and output limit are properties of the mechanism rather than of a
+	 * position, and a settle threshold that changed with position would make
+	 * isSettled() mean different things at different heights.
+	 *
+	 * A schedule of one point behaves exactly like the single-PID constructor.
+	 * An empty schedule is not a controller at all, so it yields a zero-gain PID
+	 * that holds the mechanism still rather than driving it somewhere arbitrary.
+	 */
+	Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoint> schedule);
+
+	Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoint> schedule,
+	          float minPosition, float maxPosition);
 
 	~Subsystem() override;
 
@@ -307,7 +368,50 @@ class Subsystem : public Mechanism {
 	/** True while an async move is still running. */
 	bool isMoving() const override;
 
+	/**
+	 * The live controller, carrying whichever gains the schedule last selected.
+	 *
+	 * Setting gains on it directly is overwritten on the next tick when a
+	 * schedule is active; change the schedule instead.
+	 */
 	PID& getPID();
+
+	/**
+	 * Replaces the gain schedule. Sorting, deduplication, and interpolation work
+	 * exactly as in the constructor.
+	 *
+	 * Unlike the constructor, only kP, kI, and kD are taken from the points. The
+	 * live controller keeps its threshold, slew, integral limits, and output
+	 * limit, since by now those may have been tuned on this subsystem and are
+	 * not the schedule's to overwrite. Set them through getPID() as usual.
+	 *
+	 * An empty schedule leaves the gains alone rather than zeroing them; use
+	 * clearGainSchedule() to stop scheduling.
+	 *
+	 * Cancels an async move, since that move is reading gains from its own task
+	 * every tick and would otherwise be selecting from a schedule being rebuilt
+	 * underneath it.
+	 */
+	void setGainSchedule(std::vector<GainPoint> schedule);
+
+	/**
+	 * Stops scheduling. The gains last selected stay in force everywhere, so the
+	 * mechanism keeps running under the tune it had at the moment of the call
+	 * rather than jumping to a different one.
+	 */
+	void clearGainSchedule();
+
+	/** True when more than one gain point is scheduled. */
+	bool hasGainSchedule() const;
+
+	/** The scheduled points, sorted by position. */
+	const std::vector<GainPoint>& getGainSchedule() const;
+
+	/**
+	 * The gains the schedule would select at a position, for checking a tune
+	 * without having to drive the mechanism there.
+	 */
+	PID gainsAt(float position) const;
 
 	/**
 	 * Gravity compensation, added to the PID output so the controller does not
@@ -376,6 +480,34 @@ class Subsystem : public Mechanism {
 	bool step(bool forward, bool async, std::uint32_t timeout);
 
 	PositionSource positionSource;
+
+	/**
+	 * Points the schedule at a position, writing the interpolated gains onto the
+	 * live PID.
+	 *
+	 * Assigns the gain fields directly rather than through setGains(), which
+	 * resets the integral, the previous error, and the slew memory. Selecting
+	 * gains happens every tick, so resetting there would zero the derivative
+	 * term continuously and make kD do nothing.
+	 */
+	void selectGains(float position);
+
+	/**
+	 * The interpolated gains at a position, shared by selectGains and gainsAt.
+	 *
+	 * Returns false when no schedule is active or the position is unusable, in
+	 * which case the outputs are left alone.
+	 */
+	bool lookUpGains(float position, float& kp, float& ki, float& kd) const;
+
+	/** Writes kP, kI, and kD onto the live PID without disturbing its state. */
+	void applyGains(float kp, float ki, float kd);
+
+	/** Sorts by position and drops duplicates. Shared by the ctors and setter. */
+	static std::vector<GainPoint> normalizeSchedule(std::vector<GainPoint> schedule);
+
+	/** The controller a schedule starts from: its lowest point, or zero gains. */
+	static PID baseOf(const std::vector<GainPoint>& schedule);
 
 	float feedforwardHeadroom;
 

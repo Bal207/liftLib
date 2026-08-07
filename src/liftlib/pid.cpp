@@ -85,6 +85,30 @@ float PID::getKD() const {
 	return KD;
 }
 
+float PID::getIntegral() const {
+	return integral;
+}
+
+float PID::getPreviousError() const {
+	return previousError;
+}
+
+float PID::getPreviousOutput() const {
+	return previousOutput;
+}
+
+bool PID::hasPrevious() const {
+	return hasPreviousError;
+}
+
+void PID::restoreState(float integral, float previousError, float previousOutput,
+                       bool hasPreviousError) {
+	this->integral = integral;
+	this->previousError = previousError;
+	this->previousOutput = previousOutput;
+	this->hasPreviousError = hasPreviousError;
+}
+
 void PID::setThreshold(float threshold) {
 	this->threshold = std::abs(threshold);
 }

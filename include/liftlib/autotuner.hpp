@@ -113,7 +113,13 @@ class Autotuner {
 	/** Runs a tuning cycle. Blocks until it finishes, fails, or times out. */
 	AutotuneResult run(const AutotuneConfig& config);
 
-	/** Runs a tuning cycle and writes the gains into the subsystem's PID. */
+	/**
+	 * Runs a tuning cycle and writes the gains into the subsystem's PID.
+	 *
+	 * Clears any gain schedule on success: the tune measured one set of gains at
+	 * one position, and a schedule would overwrite them on the next tick. Tune
+	 * at each position separately and build the schedule from the results.
+	 */
 	AutotuneResult runAndApply(const AutotuneConfig& config);
 
 	/** Stops an in-progress run from another task. */

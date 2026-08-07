@@ -32,6 +32,24 @@ class PID {
 	float getKI() const;
 	float getKD() const;
 
+	/**
+	 * Accumulated state, exposed so gain scheduling can carry it across a gain
+	 * change.
+	 *
+	 * setGains() resets this deliberately: new gains applied to an integral
+	 * wound up under the old ones can kick hard. A gain schedule changes gains
+	 * by a sliver every tick, where resetting would zero the derivative term
+	 * continuously and leave kD doing nothing, so it saves and restores instead.
+	 */
+	float getIntegral() const;
+	float getPreviousError() const;
+	float getPreviousOutput() const;
+	bool hasPrevious() const;
+
+	/** Puts back state saved around a setGains(). See getIntegral(). */
+	void restoreState(float integral, float previousError, float previousOutput,
+	                  bool hasPreviousError);
+
 	void setThreshold(float threshold);
 
 	void setSlew(float slew);

@@ -63,8 +63,10 @@ MotorConfig clawRotationConfig{9, 0.2};
 PID claw_pid(1, 0, 0, 0.5);
 PID lift_pid(2, 0, 0, 0.5);
 PID claw_rotation_pid(1, 0, 0, 0.5);
+PID lift_pid2(2, 0, 0, 0, 0.5);
 
-Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 55);
+
+Subsystem liftStage({liftMotorOne, liftMotorTwo}, {{lift_pid, 10}, {lift_pid2, 50}}, 0, 55);
 Subsystem claw({motor1}, claw_pid, 0, 180);
 Subsystem clawRotator({clawRotationConfig}, claw_rotation_pid, -85, 85);
 
@@ -123,7 +125,8 @@ void autonomous() {
       [] { return static_cast<float>(liftSensor.get_angle()) / 100.0f; });
 
   cascade.initialize();
-
+  liftStage.addPosition("Woah Coool", 25);
+  liftStage.moveTo("Woah Coool");
   // Scoped to the claw, so it still fires while the lift stage is moving.
   cascade.addConditionalAction(clawIsOverExtended, retractClaw, Precedence::Absolute,
                                {&claw});
@@ -137,6 +140,8 @@ void autonomous() {
 
   cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false,
                  3000);
+
+  liftStage.setOutput(12000);
 
   clamp.retract(false); // blocks for the actuation time
 

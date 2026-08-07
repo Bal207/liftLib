@@ -65,6 +65,216 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, PID pid, float minPo
 	buildMotors();
 }
 
+std::vector<Subsystem::GainPoint> Subsystem::normalizeSchedule(std::vector<GainPoint> schedule) {
+	// NaN first: every comparison against it is false, which violates the strict
+	// weak ordering std::sort requires and is undefined behaviour rather than
+	// merely a strange order.
+	schedule.erase(std::remove_if(schedule.begin(), schedule.end(),
+	                              [](const GainPoint& point) { return std::isnan(point.second); }),
+	               schedule.end());
+
+	// Sorting lets selectGains walk the points in travel order, so a user can
+	// list them in whatever order the tuning session happened to produce.
+	std::sort(schedule.begin(), schedule.end(),
+	          [](const GainPoint& a, const GainPoint& b) { return a.second < b.second; });
+
+	// Two points at one position disagree about what the gains there are, and
+	// interpolating between them would divide by a zero span. Keep the first.
+	schedule.erase(std::unique(schedule.begin(), schedule.end(),
+	                           [](const GainPoint& a, const GainPoint& b) {
+		                           return a.second == b.second;
+	                           }),
+	               schedule.end());
+
+	return schedule;
+}
+
+PID Subsystem::baseOf(const std::vector<GainPoint>& schedule) {
+	// Everything that is not kP, kI, or kD comes from the lowest point, so the
+	// threshold and slew the user tuned there hold across the whole travel.
+	if (!schedule.empty()) {
+		return schedule.front().first;
+	}
+
+	// No points at all is not a controller. Zero gains hold the mechanism where
+	// it is instead of driving it somewhere arbitrary.
+	return PID(0, 0, 0, 0);
+}
+
+void Subsystem::applyGains(float kp, float ki, float kd) {
+	// setGains() resets the integral, previous error, and slew memory. This runs
+	// every tick, so going through it would zero the derivative continuously and
+	// leave kD doing nothing. Only the three gain fields are touched here.
+	if (pid.getKP() == kp && pid.getKI() == ki && pid.getKD() == kd) {
+		return;
+	}
+
+	const float integral = pid.getIntegral();
+	const float previousError = pid.getPreviousError();
+	const float previousOutput = pid.getPreviousOutput();
+	const bool hasPrevious = pid.hasPrevious();
+
+	pid.setGains(kp, ki, kd);
+	pid.restoreState(integral, previousError, previousOutput, hasPrevious);
+}
+
+bool Subsystem::lookUpGains(float position, float& kp, float& ki, float& kd) const {
+	if (gainSchedule.size() < 2) {
+		return false;
+	}
+
+	// A position source that faults reads as NaN upstream. Every comparison
+	// below would be false, so the walk would fall off the end and leave the
+	// outputs untouched; refusing here says so plainly.
+	if (std::isnan(position)) {
+		return false;
+	}
+
+	// Outside the outermost points, hold the nearest one's gains flat rather
+	// than extrapolating, which would invent gains no one tuned.
+	const PID* flat = nullptr;
+	if (position <= gainSchedule.front().second) {
+		flat = &gainSchedule.front().first;
+	} else if (position >= gainSchedule.back().second) {
+		flat = &gainSchedule.back().first;
+	}
+
+	if (flat != nullptr) {
+		kp = flat->getKP();
+		ki = flat->getKI();
+		kd = flat->getKD();
+		return true;
+	}
+
+	for (std::size_t i = 1; i < gainSchedule.size(); i++) {
+		const GainPoint& upper = gainSchedule[i];
+		if (position > upper.second) {
+			continue;
+		}
+
+		const GainPoint& lower = gainSchedule[i - 1];
+
+		// Duplicates are removed in normalizeSchedule, so the span is nonzero.
+		const float span = upper.second - lower.second;
+		const float t = (position - lower.second) / span;
+
+		kp = lower.first.getKP() + t * (upper.first.getKP() - lower.first.getKP());
+		ki = lower.first.getKI() + t * (upper.first.getKI() - lower.first.getKI());
+		kd = lower.first.getKD() + t * (upper.first.getKD() - lower.first.getKD());
+		return true;
+	}
+
+	return false;
+}
+
+void Subsystem::selectGains(float position) {
+	float kp = 0;
+	float ki = 0;
+	float kd = 0;
+	if (lookUpGains(position, kp, ki, kd)) {
+		applyGains(kp, ki, kd);
+	}
+}
+
+PID Subsystem::gainsAt(float position) const {
+	// A copy of the live controller, so the probe carries the same threshold,
+	// slew, and limits the scheduled gains would actually run under.
+	PID probe = pid;
+
+	float kp = 0;
+	float ki = 0;
+	float kd = 0;
+	if (lookUpGains(position, kp, ki, kd)) {
+		probe.setGains(kp, ki, kd);
+	}
+	return probe;
+}
+
+void Subsystem::setGainSchedule(std::vector<GainPoint> schedule) {
+	// An async move selects gains every tick from its own task, so rebuilding
+	// the schedule under it would have it interpolating across a vector being
+	// reallocated.
+	cancelTask();
+
+	gainSchedule = normalizeSchedule(std::move(schedule));
+
+	if (gainSchedule.empty()) {
+		// Nothing to schedule from. Leave the controller exactly as it was, so
+		// clearing a schedule this way is not also a silent retune to zero.
+		return;
+	}
+
+	// Only the gains come from the schedule. The live controller keeps its
+	// threshold, slew, integral limits, and output limit, because those are
+	// settings on this subsystem rather than on a tune: replacing the whole PID
+	// here would silently discard a setIntegralZone or setSlew the user made
+	// after construction, which the constructor path never does to them.
+	if (gainSchedule.size() == 1) {
+		// One point is not something to interpolate across, so selectGains would
+		// decline it and the point would sit there doing nothing. Take it as the
+		// gains to run everywhere, which is what one point can only mean.
+		const PID& only = gainSchedule.front().first;
+		applyGains(only.getKP(), only.getKI(), only.getKD());
+		return;
+	}
+
+	selectGains(getPosition());
+}
+
+void Subsystem::clearGainSchedule() {
+	cancelTask();
+	gainSchedule.clear();
+}
+
+bool Subsystem::hasGainSchedule() const {
+	return gainSchedule.size() > 1;
+}
+
+const std::vector<Subsystem::GainPoint>& Subsystem::getGainSchedule() const {
+	return gainSchedule;
+}
+
+Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoint> schedule)
+    : motorConfigs(motorConfigs),
+      gainSchedule(normalizeSchedule(std::move(schedule))),
+      pid(baseOf(gainSchedule)),
+      minPosition(0),
+      maxPosition(0),
+      limited(false),
+      lastError(std::numeric_limits<float>::max()),
+      settled(false),
+      settleTicks(0),
+      holdTarget(0),
+      holding(false),
+      outputMode(OutputMode::Voltage),
+      derivedOutputLimit(0),
+      torqueSharing(false),
+      feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
+      cancelRequested(false) {
+	buildMotors();
+}
+
+Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoint> schedule,
+                     float minPosition, float maxPosition)
+    : motorConfigs(motorConfigs),
+      gainSchedule(normalizeSchedule(std::move(schedule))),
+      pid(baseOf(gainSchedule)),
+      minPosition(std::min(minPosition, maxPosition)),
+      maxPosition(std::max(minPosition, maxPosition)),
+      limited(true),
+      lastError(std::numeric_limits<float>::max()),
+      settled(false),
+      settleTicks(0),
+      holdTarget(0),
+      holding(false),
+      outputMode(OutputMode::Voltage),
+      derivedOutputLimit(0),
+      torqueSharing(false),
+      feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
+      cancelRequested(false) {
+	buildMotors();
+}
+
 float Subsystem::velocityCeiling() const {
 	// The slowest cartridge in the group sets the ceiling, since commanding
 	// past it would desynchronise a group of mixed gearings.
@@ -243,6 +453,12 @@ void Subsystem::update(float target) {
 }
 
 void Subsystem::updateAt(float target, float position) {
+	// Gains follow where the mechanism is, not where it is going, so a move into
+	// a stiffer region stiffens as it arrives rather than the moment it is
+	// commanded. Every motion path reaches the controller through here, so this
+	// covers moveTo, hold, and a hand-driven update alike.
+	selectGains(position);
+
 	lastError = clampTarget(target) - position;
 
 	if (pid.isSettled(lastError)) {
