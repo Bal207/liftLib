@@ -21,7 +21,7 @@ SPACE := $() $()
 COMMA := ,
 
 C_STANDARD?=gnu23
-CXX_STANDARD?=gnu++26
+CXX_STANDARD?=gnu++20
 
 DEPDIR := .d
 $(shell mkdir -p $(DEPDIR))
@@ -37,8 +37,8 @@ wlprefix=-Wl,$(subst $(SPACE),$(COMMA),$1)
 LNK_FLAGS=--gc-sections --start-group $(strip $(LIBRARIES)) -lgcc -lstdc++ --end-group -T$(FWDIR)/v5-common.ld --no-warn-rwx-segments --sort-section=alignment --sort-common
 
 ASMFLAGS=$(MFLAGS) $(WARNFLAGS)
-CFLAGS=$(MFLAGS) $(CPPFLAGS) $(WARNFLAGS) $(GCCFLAGS) --std=$(C_STANDARD)
-CXXFLAGS=$(MFLAGS) $(CPPFLAGS) $(WARNFLAGS) $(GCCFLAGS) --std=$(CXX_STANDARD)
+CFLAGS=$(MFLAGS) $(CPPFLAGS) $(WARNFLAGS) $(GCCFLAGS) -std=$(C_STANDARD)
+CXXFLAGS=$(MFLAGS) $(CPPFLAGS) $(WARNFLAGS) $(GCCFLAGS) -std=$(CXX_STANDARD)
 LDFLAGS=$(MFLAGS) $(WARNFLAGS) -nostdlib $(GCCFLAGS)
 SIZEFLAGS=-d --common
 NUMFMTFLAGS=--to=iec --format %.2f --suffix=B
@@ -154,7 +154,7 @@ ASMOBJ=$(addprefix $(BINDIR)/,$(patsubst $(SRCDIR)/%,%.o,$(call ASMSRC,$1)))
 CSRC=$(foreach cext,$(CEXTS),$(call rwildcard, $(SRCDIR),*.$(cext), $1))
 COBJ=$(addprefix $(BINDIR)/,$(patsubst $(SRCDIR)/%,%.o,$(call CSRC, $1)))
 CXXSRC=$(foreach cxxext,$(CXXEXTS),$(call rwildcard, $(SRCDIR),*.$(cxxext), $1))
-CXXOBJ=$(addprefix $(BINDIR)/,$(patsubst $(SRCDIR)/%,%.o,$(call CXXSRC,$1)))
+CXXOBJ=$(addprefix $(BINDIR)/,$(patsubst $(SRCDIR)/%,%.o,$(call CXXSRC, $1)))
 
 GETALLOBJ=$(sort $(call ASMOBJ,$1) $(call COBJ,$1) $(call CXXOBJ,$1))
 
@@ -240,8 +240,8 @@ $(COLD_BIN): $(COLD_ELF)
 
 $(COLD_ELF): $(COLD_LIBRARIES)
 	$(VV)mkdir -p $(dir $@)
-	$(call test_output_2,Creating cold package with $(ARCHIVE_TEXT_LIST) ,$(LD) $(LDFLAGS) $(call wlprefix,--gc-keep-exported --whole-archive $^ -lstdc++ --no-whole-archive) $(call wlprefix,-T$(FWDIR)/v5.ld $(LNK_FLAGS) -o $@),$(OK_STRING))
-	$(call test_output_2,Stripping cold package ,$(OBJCOPY) --strip-symbol=install_hot_table --strip-symbol=__libc_init_array --strip-symbol=_PROS_COMPILE_DIRECTORY --strip-symbol=_PROS_COMPILE_TIMESTAMP --strip-symbol=_PROS_COMPILE_TIMESTAMP_INT $@ $@, $(DONE_STRING))
+	$(call test_output_2,Creating cold package with $(ARCHIVE_TEXT_LIST) ,$(LD) $(LDFLAGS) $(call wlprefix,--gc-keep-exported --whole-archive $^ -lstdc++ --no-whole-archive) $(call wlprefix,-T$(FWDI[...]
+	$(call test_output_2,Stripping cold package ,$(OBJCOPY) --strip-symbol=install_hot_table --strip-symbol=__libc_init_array --strip-symbol=_PROS_COMPILE_DIRECTORY --strip-symbol=_PROS_COMPILE_TIME[...]
 	@echo Section sizes:
 	-$(VV)$(SIZETOOL) $(SIZEFLAGS) $@ $(SIZES_SED) $(SIZES_NUMFMT)
 
@@ -250,7 +250,7 @@ $(HOT_BIN): $(HOT_ELF) $(COLD_BIN)
 
 $(HOT_ELF): $(COLD_ELF) $(ELF_DEPS)
 	$(call _pros_ld_timestamp)
-	$(call test_output_2,Linking hot project with $(COLD_ELF) and $(ARCHIVE_TEXT_LIST) ,$(LD) -nostartfiles $(LDFLAGS) $(call wlprefix,-R $<) $(filter-out $<,$^) $(LDTIMEOBJ) $(LIBRARIES) $(call wlprefix,-T$(FWDIR)/v5-hot.ld $(LNK_FLAGS) -o $@),$(OK_STRING))
+	$(call test_output_2,Linking hot project with $(COLD_ELF) and $(ARCHIVE_TEXT_LIST) ,$(LD) -nostartfiles $(LDFLAGS) $(call wlprefix,-R $<) $(filter-out $<,$^) $(LDTIMEOBJ) $(LIBRARIES) $(call wlp[...]
 	@printf "%s\n" "Section sizes:"
 	-$(VV)$(SIZETOOL) $(SIZEFLAGS) $@ $(SIZES_SED) $(SIZES_NUMFMT)
 
@@ -294,7 +294,7 @@ $(VV)mkdir -p $(dir $(LDTIMEOBJ))
 @# The shell command $$(($$(date +%s)+($$(date +%-z)/100*3600))) fetches the current
 @# unix timestamp, and then adds the UTC timezone offset to account for time zones.
 
-$(call test_output_2,Adding timestamp ,echo 'const int _PROS_COMPILE_TIMESTAMP_INT = $(shell echo $$(($$(date +%s)+($$(date +%-z)/100*3600)))); char const * const _PROS_COMPILE_TIMESTAMP = __DATE__ " " __TIME__; char const * const _PROS_COMPILE_DIRECTORY = "$(wildcard $(shell pwd | tail -c23))";' | $(CC) -c -x c $(CFLAGS) $(EXTRA_CFLAGS) -o $(LDTIMEOBJ) -,$(OK_STRING))
+$(call test_output_2,Adding timestamp ,echo 'const int _PROS_COMPILE_TIMESTAMP_INT = $(shell echo $$(($$(date +%s)+($$(date +%-z)/100*3600)))); char const * const _PROS_COMPILE_TIMESTAMP = __DATE__[...]
 endef
 
 # these rules are for build-compile-commands, which just print out sysroot information
