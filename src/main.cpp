@@ -124,8 +124,6 @@ void autonomous() {
 
   cascade.initialize();
 
-  liftStage.addPosition("Stage 1", 22);
-
   // Scoped to the claw, so it still fires while the lift stage is moving.
   cascade.addConditionalAction(clawIsOverExtended, retractClaw, Precedence::Absolute,
                                {&claw});
