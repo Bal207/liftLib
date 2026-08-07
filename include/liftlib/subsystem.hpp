@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "api.h"
@@ -184,6 +185,97 @@ class Subsystem : public Mechanism {
 	virtual void moveTo(float target, bool async = true, std::uint32_t timeout = NO_TIMEOUT);
 
 	/**
+	 * Names a position so routines can ask for it by meaning rather than by
+	 * number.
+	 *
+	 * Adding a name that already exists moves it, which is what you want when
+	 * tuning a height without restarting.
+	 *
+	 * The position is stored as given. Soft limits are applied when a move
+	 * starts, not here, so a name added before the limits are known still ends
+	 * up clamped correctly.
+	 *
+	 * Names are compared exactly, including case. Returns false only for an
+	 * empty name.
+	 */
+	bool addPosition(const std::string& name, float position);
+
+	/** Returns false when no position carries that name. */
+	bool removePosition(const std::string& name);
+
+	void clearPositions();
+
+	bool hasPosition(const std::string& name) const;
+
+	/**
+	 * The position stored under a name, or fallback when there is none.
+	 *
+	 * Deliberately not an overload of getPosition(): that one is virtual, and a
+	 * subclass overriding it would hide this one, which is a confusing error to
+	 * land on.
+	 *
+	 * Prefer tryPositionOf() where telling "missing" from "stored zero"
+	 * matters.
+	 */
+	float positionOf(const std::string& name, float fallback = 0) const;
+
+	/** Writes the stored position into out and returns whether it existed. */
+	bool tryPositionOf(const std::string& name, float& out) const;
+
+	/** Every name, sorted by position, lowest first. */
+	std::vector<std::string> positionNames() const;
+
+	std::size_t positionCount() const;
+
+	/**
+	 * Moves to a named position.
+	 *
+	 * Returns false and does nothing when the name is unknown, so a typo
+	 * cannot silently drive the mechanism to zero.
+	 *
+	 * Behaves exactly like the numeric moveTo once the name resolves: the same
+	 * cancellation, timeout, and settling rules apply.
+	 */
+	bool moveTo(const std::string& name, bool async = true,
+	            std::uint32_t timeout = NO_TIMEOUT);
+
+	/**
+	 * The name whose position is closest to where the mechanism is now, or an
+	 * empty string when no names are stored.
+	 *
+	 * Only counts a name within tolerance; pass a negative tolerance to accept
+	 * the nearest one no matter how far away it is.
+	 */
+	std::string nearestPosition(float tolerance = -1) const;
+
+	/** True when the mechanism is within tolerance of that named position. */
+	bool isAtPosition(const std::string& name, float tolerance) const;
+
+	/**
+	 * True when the mechanism is within the PID's settle threshold of that
+	 * named position.
+	 */
+	bool isAtPosition(const std::string& name) const;
+
+	/**
+	 * Moves to the next named position above where the mechanism is now.
+	 *
+	 * This is the button-cycling case: bind next() to one button and
+	 * previous() to another and a lift steps through its heights in order.
+	 *
+	 * Stepping is measured from the current position rather than from the last
+	 * name commanded, so a mechanism the driver has dragged out of place still
+	 * steps to the right neighbour.
+	 *
+	 * Returns false when already at or above the highest name, so a held
+	 * button does not wrap around to the bottom.
+	 */
+	bool next(bool async = true, std::uint32_t timeout = NO_TIMEOUT);
+
+	/** The mirror of next(). Returns false at or below the lowest name. */
+	bool previous(bool async = true, std::uint32_t timeout = NO_TIMEOUT);
+
+	/**
 	 * Fraction of the output range the feedforward may claim, 0 to 1.
 	 *
 	 * The gravity term and the PID term share one output range, so on a heavy
@@ -255,6 +347,33 @@ class Subsystem : public Mechanism {
 	std::vector<float> outputScales;
 
 	void buildOutputScales();
+
+	struct NamedPosition {
+		std::string name;
+		float position;
+	};
+
+	/**
+	 * Named positions, kept sorted by position so next() and previous() are a
+	 * scan rather than a sort on every button press.
+	 */
+	std::vector<NamedPosition> positions;
+
+	/**
+	 * Guards the name table only.
+	 *
+	 * Every public entry point copies what it needs out from under this lock
+	 * and releases it before doing anything else, so it is never held across a
+	 * move, a motor write, or a user callback. That keeps it impossible to
+	 * deadlock against the move task or Lift's action poll.
+	 */
+	mutable pros::Mutex positionMutex;
+
+	/** Resolves a name to a position. Caller must NOT hold positionMutex. */
+	bool lookUp(const std::string& name, float& out) const;
+
+	/** Shared body of next() and previous(). */
+	bool step(bool forward, bool async, std::uint32_t timeout);
 
 	PositionSource positionSource;
 

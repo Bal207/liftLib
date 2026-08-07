@@ -15,3 +15,9 @@ temp.log
 temp.errors
 *.ini
 .d/
+
+# Built templates. These are release artifacts, not source: a committed one goes
+# stale the moment the library changes, and anyone who fetched it would get an
+# old build. Attach them to a GitHub Release instead.
+*.zip
+template/

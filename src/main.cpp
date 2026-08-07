@@ -60,9 +60,9 @@ MotorConfig liftMotorOne{6, LIFT_RATIO, pros::E_MOTOR_BRAKE_HOLD};
 MotorConfig liftMotorTwo{-7, LIFT_RATIO, pros::E_MOTOR_BRAKE_HOLD};
 MotorConfig clawRotationConfig{9, 0.2};
 
-PID claw_pid(1, 0, 0, 1);
-PID lift_pid(2, 0, 0, 1);
-PID claw_rotation_pid(1, 0, 0, 1);
+PID claw_pid(1, 0, 0, 0.5);
+PID lift_pid(2, 0, 0, 0.5);
+PID claw_rotation_pid(1, 0, 0, 0.5);
 
 Subsystem liftStage({liftMotorOne, liftMotorTwo}, lift_pid, 0, 55);
 Subsystem claw({motor1}, claw_pid, 0, 180);

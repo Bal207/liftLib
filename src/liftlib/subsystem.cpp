@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <utility>
 
 namespace liftlib {
@@ -431,6 +432,210 @@ void Subsystem::moveTo(float target, bool async, std::uint32_t timeout) {
 	cancelRequested.store(false);
 	task = std::make_unique<pros::Task>(
 	    [this, target, timeout]() { moveToBlocking(target, timeout); });
+}
+
+bool Subsystem::addPosition(const std::string& name, float position) {
+	if (name.empty()) {
+		return false;
+	}
+
+	positionMutex.take(TIMEOUT_MAX);
+
+	bool replaced = false;
+	for (NamedPosition& entry : positions) {
+		if (entry.name == name) {
+			entry.position = position;
+			replaced = true;
+			break;
+		}
+	}
+
+	if (!replaced) {
+		positions.push_back({name, position});
+	}
+
+	// Keep the table ordered so stepping is a scan. Ties keep a stable order by
+	// falling back to the name, so two names at the same height still step
+	// through predictably rather than depending on insertion order.
+	std::sort(positions.begin(), positions.end(),
+	          [](const NamedPosition& a, const NamedPosition& b) {
+		          return a.position != b.position ? a.position < b.position : a.name < b.name;
+	          });
+
+	positionMutex.give();
+	return true;
+}
+
+bool Subsystem::removePosition(const std::string& name) {
+	positionMutex.take(TIMEOUT_MAX);
+
+	bool removed = false;
+	for (std::size_t i = 0; i < positions.size(); i++) {
+		if (positions[i].name == name) {
+			positions.erase(positions.begin() + i);
+			removed = true;
+			break;
+		}
+	}
+
+	positionMutex.give();
+	return removed;
+}
+
+void Subsystem::clearPositions() {
+	positionMutex.take(TIMEOUT_MAX);
+	positions.clear();
+	positionMutex.give();
+}
+
+bool Subsystem::lookUp(const std::string& name, float& out) const {
+	positionMutex.take(TIMEOUT_MAX);
+
+	bool found = false;
+	for (const NamedPosition& entry : positions) {
+		if (entry.name == name) {
+			out = entry.position;
+			found = true;
+			break;
+		}
+	}
+
+	positionMutex.give();
+	return found;
+}
+
+bool Subsystem::hasPosition(const std::string& name) const {
+	float ignored = 0;
+	return lookUp(name, ignored);
+}
+
+bool Subsystem::tryPositionOf(const std::string& name, float& out) const {
+	return lookUp(name, out);
+}
+
+float Subsystem::positionOf(const std::string& name, float fallback) const {
+	float value = 0;
+	return lookUp(name, value) ? value : fallback;
+}
+
+std::vector<std::string> Subsystem::positionNames() const {
+	positionMutex.take(TIMEOUT_MAX);
+
+	std::vector<std::string> names;
+	names.reserve(positions.size());
+	for (const NamedPosition& entry : positions) {
+		names.push_back(entry.name);
+	}
+
+	positionMutex.give();
+	return names;
+}
+
+std::size_t Subsystem::positionCount() const {
+	positionMutex.take(TIMEOUT_MAX);
+	const std::size_t count = positions.size();
+	positionMutex.give();
+	return count;
+}
+
+bool Subsystem::moveTo(const std::string& name, bool async, std::uint32_t timeout) {
+	float target = 0;
+	// Resolve first and release the lock, so the move never runs under it.
+	if (!lookUp(name, target)) {
+		return false;
+	}
+
+	moveTo(target, async, timeout);
+	return true;
+}
+
+std::string Subsystem::nearestPosition(float tolerance) const {
+	const float current = getPosition();
+
+	positionMutex.take(TIMEOUT_MAX);
+
+	std::string best;
+	float bestDistance = 0;
+	for (const NamedPosition& entry : positions) {
+		const float distance = std::abs(entry.position - current);
+		if (best.empty() || distance < bestDistance) {
+			best = entry.name;
+			bestDistance = distance;
+		}
+	}
+
+	positionMutex.give();
+
+	if (!best.empty() && tolerance >= 0 && bestDistance > tolerance) {
+		return {};
+	}
+	return best;
+}
+
+bool Subsystem::isAtPosition(const std::string& name, float tolerance) const {
+	float target = 0;
+	if (!lookUp(name, target)) {
+		return false;
+	}
+	return std::abs(clampTarget(target) - getPosition()) <= std::abs(tolerance);
+}
+
+bool Subsystem::isAtPosition(const std::string& name) const {
+	float target = 0;
+	if (!lookUp(name, target)) {
+		return false;
+	}
+	return pid.isSettled(clampTarget(target) - getPosition());
+}
+
+bool Subsystem::step(bool forward, bool async, std::uint32_t timeout) {
+	const float current = getPosition();
+
+	// A step has to clear the threshold, or a mechanism sitting a hair below a
+	// name would "step up" to the name it is already at and never advance.
+	const float epsilon = std::max(pid.getThreshold(), 1e-3f);
+
+	positionMutex.take(TIMEOUT_MAX);
+
+	bool found = false;
+	float target = 0;
+
+	if (forward) {
+		// Sorted ascending, so the first name above the current position wins.
+		for (const NamedPosition& entry : positions) {
+			if (entry.position > current + epsilon) {
+				target = entry.position;
+				found = true;
+				break;
+			}
+		}
+	} else {
+		for (std::size_t i = positions.size(); i > 0; i--) {
+			const NamedPosition& entry = positions[i - 1];
+			if (entry.position < current - epsilon) {
+				target = entry.position;
+				found = true;
+				break;
+			}
+		}
+	}
+
+	positionMutex.give();
+
+	if (!found) {
+		return false;
+	}
+
+	moveTo(target, async, timeout);
+	return true;
+}
+
+bool Subsystem::next(bool async, std::uint32_t timeout) {
+	return step(true, async, timeout);
+}
+
+bool Subsystem::previous(bool async, std::uint32_t timeout) {
+	return step(false, async, timeout);
 }
 
 void Subsystem::cancelTask() {

@@ -6,6 +6,7 @@ An extremely easy to use yet dynamic library for vexV5 Lifts.
 
 ## Features
 
+- Named positions, with button-friendly `next()` and `previous()`
 - Motor groups with per-motor gear ratios and brake modes
 - Voltage control by default, on the familiar -127 to 127 scale
 - PID with integral clamping, integral zone, output limiting, and slew
@@ -18,10 +19,11 @@ An extremely easy to use yet dynamic library for vexV5 Lifts.
 
 ## Installation
 
-Build the template and apply it to a PROS project:
+Download `liftlib@<version>.zip` from the
+[latest release](https://github.com/Bal207/liftLib/releases/latest), then apply
+it to your PROS project:
 
 ```sh
-make template
 pros c fetch liftlib@1.0.0.zip
 pros c apply liftlib
 ```
@@ -30,6 +32,12 @@ Then include the umbrella header:
 
 ```cpp
 #include "liftlib/liftlib.hpp"
+```
+
+To build the template from source instead:
+
+```sh
+make template
 ```
 
 ## Usage
@@ -55,6 +63,74 @@ void autonomous() {
 
 `gear_ratio` converts motor degrees into whatever unit you want to command in.
 Leave it at `1` to work in motor degrees.
+
+### Named positions
+
+Give the heights names once, and the rest of your code stops dealing in magic
+numbers:
+
+```cpp
+arm.addPosition("down", 0);
+arm.addPosition("load", 18);
+arm.addPosition("score", 45);
+
+arm.moveTo("score");                 // async, like the numeric moveTo
+arm.moveTo("score", false, 2000);    // blocking, 2 s timeout
+```
+
+`moveTo` returns false for a name that does not exist and does not move, so a
+typo cannot quietly drive the mechanism to zero.
+
+The reason to bother is opcontrol. Two buttons step through the heights in
+order, whatever order you added them in:
+
+```cpp
+if (master.get_digital_new_press(DIGITAL_L1)) {
+    arm.next();
+} else if (master.get_digital_new_press(DIGITAL_L2)) {
+    arm.previous();
+}
+```
+
+Stepping is measured from where the mechanism actually is, not from the last
+name you asked for, so an arm the driver has dragged out of place still steps to
+the right neighbour. `next()` returns false at the top rather than wrapping
+around to the bottom, so a held button cannot drop the lift.
+
+To show the driver what is going on:
+
+```cpp
+pros::lcd::print(1, "at: %s", arm.nearestPosition(2).c_str());
+
+arm.isAtPosition("score");        // within the PID settle threshold
+arm.isAtPosition("score", 5);     // within 5 units
+```
+
+`nearestPosition(tolerance)` gives back an empty string when nothing is that
+close; pass a negative tolerance to always get the closest name.
+
+The rest of the table:
+
+```cpp
+arm.addPosition("score", 50);     // re-adding a name moves it, no duplicate
+arm.removePosition("load");
+arm.clearPositions();
+
+arm.hasPosition("score");
+arm.positionOf("score");          // the stored value, or a fallback
+arm.positionOf("score", -1);
+arm.positionNames();              // sorted low to high
+arm.positionCount();
+```
+
+Positions can be added, moved, and removed at any time, from any task, including
+from inside a conditional action or while a move is running. The table is
+guarded by its own lock that is never held while a move runs or a motor is
+written, so it cannot deadlock against the move task or a `Lift` poll.
+
+Names are stored as given and compared exactly, case included. Soft limits are
+applied when the move starts rather than when the name is added, so a name added
+before you know the limits still ends up clamped correctly.
 
 ### 5.5W motors
 
@@ -635,3 +711,19 @@ targets. Code that used the `Subsystem*` from `getStage()` should move to
 ## Requirements
 
 PROS 4 (4.2.2 onward) and C++20 or newer.
+
+## Releasing
+
+Releases are built by CI, never by hand, so the published zip always matches the
+tagged commit:
+
+1. Bump `VERSION` in the `Makefile`.
+2. Commit, then tag it to match: `git tag v1.1.0 && git push --tags`.
+
+The release workflow checks the tag against `VERSION`, builds the template, and
+attaches it to a GitHub Release. Built templates are gitignored on purpose; a
+committed one goes stale the moment the library changes.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

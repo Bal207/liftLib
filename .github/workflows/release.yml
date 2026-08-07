@@ -1,0 +1,57 @@
+name: release
+
+# Builds the template from source on a version tag and attaches it to the
+# release, so the published zip always matches the tagged commit. Nothing built
+# by hand is ever committed.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '13.2.Rel1'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PROS CLI
+        run: pip install pros-cli
+
+      - name: Check the tag matches the Makefile version
+        # A tag that disagrees with VERSION would publish a zip whose name does
+        # not match the release, which is exactly the confusion this workflow
+        # exists to prevent.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MK=$(grep -oP '^VERSION:=\K.*' Makefile)
+          echo "tag=$TAG makefile=$MK"
+          if [ "$TAG" != "$MK" ]; then
+            echo "::error::tag v$TAG does not match Makefile VERSION $MK"
+            exit 1
+          fi
+
+      - name: Build template
+        run: make template -j$(nproc)
+
+      - name: Locate the built template
+        id: artifact
+        run: echo "path=$(ls liftlib@*.zip | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          generate_release_notes: true
