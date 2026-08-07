@@ -141,7 +141,11 @@ void autonomous() {
   cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false,
                  3000);
 
+<<<<<<< HEAD
   liftStage.setOutput(12000);
+=======
+  liftStage.moveTo("Stage 1");
+>>>>>>> 02388a62b1e3c4b9d190606ced1e70a756d85977
 
   clamp.retract(false); // blocks for the actuation time
 
