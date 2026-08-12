@@ -15,7 +15,6 @@ An extremely easy to use yet dynamic library for vexV5 Lifts.
 - Soft position limits per subsystem
 - Multi-stage coordination through `Lift`, pistons included
 - Gravity compensation for lifts and pivoting arms
-- Automatic PID tuning by relay feedback
 
 ## Installation
 
@@ -551,114 +550,10 @@ cascade.hold();
 Gravity compensation is per subsystem, so a cascade that carries load on the
 bottom stage and nothing on the claw only needs it on the stage that sags.
 
-### Autotuning
-
-`Autotuner` finds gains for you. It drives the subsystem with a bang-bang output
-around a setpoint, measures the oscillation that comes back, and converts it into
-PID gains. A run typically converges in five cycles.
-
-The subsystem oscillates for the whole run, so keep clear of it and tune outside
-of a match.
-
-```cpp
-Subsystem arm({left, right}, armPid, 0, 90);
-
-void tuneArm() {
-    arm.initialize();
-
-    Autotuner tuner(arm);
-    AutotuneResult result = tuner.run(AutotuneConfig{});
-
-    if (result.success) {
-        printf("kP %.3f  kI %.4f  kD %.2f\n", result.kp, result.ki, result.kd);
-    } else {
-        printf("tuning failed: %s\n", result.error);
-    }
-}
-```
-
-Copy the printed gains into your `PID` so they survive a restart, or apply them
-for the current run with `runAndApply`:
-
-```cpp
-Autotuner tuner(arm);
-tuner.runAndApply(AutotuneConfig{});   // writes the gains into arm's PID
-```
-
-On a subsystem with soft limits the default setpoint is the midpoint and the
-oscillation is kept inside the limits automatically. Without limits, give it a
-setpoint and a travel budget:
-
-```cpp
-AutotuneConfig config;
-config.useSetpoint = true;
-config.setpoint = 30;
-config.maxExcursion = 15;   // stop if it strays 15 units from the setpoint
-```
-
-Drive strength and the noise band are worked out for you: the relay starts from
-the motor gearset limit and grows or shrinks during the run until the swing is
-big enough to measure but still well inside the travel budget, and the noise band
-comes from the PID settle threshold. A run reports what it settled on in
-`result.relayAmplitude`.
-
-The remaining knobs are rarely needed:
-
-```cpp
-config.tolerance = 0.1f;      // cycles must agree within 10% to accept the run
-config.timeout = 15000;
-config.rule = TuningRule::NoOvershoot;
-```
-
-Pick the rule to suit the mechanism. `ZieglerNicholsPID` (the default) is
-responsive but overshoots a little; `NoOvershoot` and `SomeOvershoot` trade speed
-for a gentler approach, which usually works best for most lifts.
-
-When a run fails, `result.status` says why:
-
-| Status | Meaning |
-| --- | --- |
-| `Success` | Gains are in `result` |
-| `InvalidConfig` | A config field is out of range; see `result.error` |
-| `OutOfRoom` | Limits too tight to oscillate between |
-| `NoOscillation` | Never oscillated; the mechanism may be stuck |
-| `ExcursionExceeded` | Travelled too far; give it more room or set `maxExcursion` |
-| `TimedOut` | Did not converge before `timeout` |
-| `Cancelled` | `cancel()` was called |
-
-`result` also carries `ultimateGain`, `ultimatePeriod`, `cyclesMeasured`, and
-`elapsed` if you want to see what the run actually measured.
-
-`run` blocks until it finishes, so if you want a way out mid run, put it in a task
-and call `cancel()` from the controller loop:
-
-```cpp
-Autotuner tuner(arm);
-
-pros::Task tuning([&] { tuner.runAndApply(AutotuneConfig{}); });
-
-while (tuner.isRunning()) {
-    if (master.get_digital(DIGITAL_B)) {
-        tuner.cancel();
-    }
-    pros::delay(20);
-}
-```
-
-A cancelled run brakes the motors and comes back with `AutotuneStatus::Cancelled`.
-
-Tune `kG` before you autotune, not after. The tuner swings the relay around the
-holding output, so with the right `kG` a loaded lift rises and falls evenly
-instead of sagging through the whole run.
-
-Relay tuning gets you a good starting point rather than a perfect answer. The
-underlying method approximates the mechanism's response, so treat the gains as a
-solid base and hand trim from there if you need the last few percent.
-
 ## Namespacing
 
 Everything lives in the `liftlib` namespace. The umbrella header also exposes
-`Lift`, `Subsystem`, `PID`, `MotorConfig`, and the `Autotune*` types unqualified
+`Lift`, `Subsystem`, `PID`, and `MotorConfig` unqualified
 for convenience. If those names collide with another library, opt out:
 
 ```cpp
@@ -679,7 +574,6 @@ include/liftlib/     public headers (shipped in the template)
   piston.hpp         a pneumatic stage
   pid.hpp            the controller
   feedforward.hpp    gravity compensation
-  autotuner.hpp      relay-feedback PID tuning
   motor_config.hpp   per-motor port, ratio, brake mode, gearset
   output_mode.hpp    voltage or velocity output
 src/liftlib/         implementation
@@ -698,8 +592,8 @@ Retune, or put the subsystem back the way it was:
 arm.setOutputMode(OutputMode::Velocity);
 ```
 
-`kG` moves with it, so retune gravity compensation too, and autotune afterwards
-rather than reusing a stored result.
+`kG` moves with it, so retune gravity compensation too rather than reusing a
+stored value.
 
 `Lift` now holds `Mechanism*` rather than `Subsystem*`, so that pistons can be
 stages. Existing code that passes subsystems is unaffected, but the accessors

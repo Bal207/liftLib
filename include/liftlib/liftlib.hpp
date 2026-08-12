@@ -1,6 +1,5 @@
 #pragma once
 
-#include "liftlib/autotuner.hpp"
 #include "liftlib/feedforward.hpp"
 #include "liftlib/lift.hpp"
 #include "liftlib/mechanism.hpp"
@@ -25,10 +24,6 @@
  * `using namespace pros` in main.h. Write liftlib::MotorType.
  */
 #ifndef LIFTLIB_NO_GLOBAL_NAMES
-using liftlib::AutotuneConfig;
-using liftlib::AutotuneResult;
-using liftlib::AutotuneStatus;
-using liftlib::Autotuner;
 using liftlib::ConditionalAction;
 using liftlib::Feedforward;
 using liftlib::GravityModel;
@@ -41,5 +36,4 @@ using liftlib::PID;
 using liftlib::Piston;
 using liftlib::PistonConfig;
 using liftlib::Subsystem;
-using liftlib::TuningRule;
 #endif

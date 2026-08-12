@@ -79,28 +79,6 @@ pros::Rotation liftSensor(11);
 
 Lift cascade{&liftStage, &claw, &clawRotator, &clamp};
 
-void tuneLiftStage() {
-  liftStage.initialize();
-
-  // Increase until the lift doesnt sag at mid height
-  liftStage.setFeedforward(Feedforward::constant(0));
-
-  Autotuner tuner(liftStage);
-  AutotuneResult result = tuner.run(AutotuneConfig{});
-
-  if (!result.success) {
-    pros::lcd::print(3, "tune failed: %s", result.error);
-    return;
-  }
-
-  pros::lcd::print(3, "kP %.3f kI %.4f", result.kp, result.ki);
-  pros::lcd::print(4, "kD %.2f", result.kd);
-  pros::lcd::print(5, "Ku %.2f Tu %.2fs", result.ultimateGain,
-                   result.ultimatePeriod);
-  pros::lcd::print(6, "%d cycles in %u ms", result.cyclesMeasured,
-                   result.elapsed);
-}
-
 /**
  * Runs the user autonomous code. This function will be started in its own task
  * with the default priority and stack size whenever the robot is enabled via
@@ -141,11 +119,7 @@ void autonomous() {
   cascade.moveTo({{&liftStage, 15}, {&claw, 180}, {&clawRotator, -90}}, false,
                  3000);
 
-<<<<<<< HEAD
   liftStage.setOutput(12000);
-=======
-  liftStage.moveTo("Stage 1");
->>>>>>> 02388a62b1e3c4b9d190606ced1e70a756d85977
 
   clamp.retract(false); // blocks for the actuation time
 
