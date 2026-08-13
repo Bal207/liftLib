@@ -64,6 +64,16 @@ class Subsystem : public Mechanism {
 	static constexpr int SETTLE_COUNT = 5;
 
 	/**
+	 * Largest magnitude a position read is believed at.
+	 *
+	 * PROS reports a failed read as PROS_ERR (INT32_MAX), which arrives here
+	 * scaled by a gear ratio or a user's unit conversion rather than as the
+	 * exact sentinel. No real mechanism travels this far in any unit, so a
+	 * reading past it is a fault rather than a position.
+	 */
+	static constexpr float POSITION_SANITY_LIMIT = 1e6f;
+
+	/**
 	 * Reads the mechanism's position, in whatever units the subsystem commands.
 	 *
 	 * Return the position directly; the gear ratios in MotorConfig are not
@@ -174,6 +184,43 @@ class Subsystem : public Mechanism {
 	 * instead, which is enough to stop a lift sagging after a blocking move.
 	 */
 	void hold() override;
+
+	/**
+	 * Holds at a commanded target rather than at the measured position.
+	 *
+	 * This is what a finished move wants: a mechanism that settles a little low
+	 * under load should keep being pulled towards where it was sent, not have
+	 * that droop latched in as the new target and compounded by the next move.
+	 *
+	 * Latches on the first call exactly as hold() does, so calling it every tick
+	 * closes the loop around one target.
+	 */
+	void holdAt(float target);
+
+	/**
+	 * Keeps the loop closed around a target in a task of its own.
+	 *
+	 * A single hold() writes one output and stops there, which a loaded lift
+	 * answers by sagging. This drives the controller every tick until something
+	 * commands otherwise, so the mechanism actually stays put.
+	 *
+	 * The hold task is separate from the move task on purpose: isMoving() means
+	 * "a move is running", and a hold is not a move. A held subsystem reports
+	 * settled and not moving, so waitUntilSettled() returns as it always did.
+	 *
+	 * Any new move, stop(), brake(), or releaseHold() ends the hold. Starting a
+	 * hold while one is already running re-latches it on the new target.
+	 *
+	 * Does nothing without a feedforward configured: with no gravity term there
+	 * is nothing for the hold to push with, and the brake already does the job.
+	 */
+	void holdActively(float target);
+
+	/** Holds actively wherever the mechanism is now. */
+	void holdActively();
+
+	/** True while the hold task is driving the mechanism. */
+	bool isHoldingActively() const;
 
 	/** Forgets the latched hold position so the next hold() latches afresh. */
 	void releaseHold();
@@ -482,6 +529,19 @@ class Subsystem : public Mechanism {
 	PositionSource positionSource;
 
 	/**
+	 * The last position that read as usable.
+	 *
+	 * A faulted sensor freezes the subsystem here rather than reporting zero,
+	 * which would make the error the whole target and drive the mechanism into
+	 * a hard stop. Mutable because getPosition() is const and is the only place
+	 * a fresh sample arrives.
+	 */
+	mutable float lastPosition;
+
+	/** False for NaN, infinity, and magnitudes only a failed read produces. */
+	static bool isUsablePosition(float position);
+
+	/**
 	 * Points the schedule at a position, writing the interpolated gains onto the
 	 * live PID.
 	 *
@@ -513,6 +573,33 @@ class Subsystem : public Mechanism {
 
 	std::unique_ptr<pros::Task> task;
 	std::atomic<bool> cancelRequested;
+
+	/**
+	 * Drives the hold loop, separate from the move task.
+	 *
+	 * Kept apart so isMoving() can keep meaning "a move is running": a hold is
+	 * not a move, and folding it into the move task would make every finished
+	 * move report as still moving and hang waitUntilSettled().
+	 */
+	std::unique_ptr<pros::Task> holdTask;
+	std::atomic<bool> holdStop;
+
+	/**
+	 * Guards holdTask itself.
+	 *
+	 * An async move starts its hold from inside the move task, while the next
+	 * command stops it from the caller's task, so the pointer is written and
+	 * read from two tasks. Only the pointer is guarded: the lock is never held
+	 * across a join, or stopping a hold would block behind the move that is
+	 * starting one.
+	 */
+	mutable pros::Mutex holdMutex;
+
+	/** Target the hold task drives towards. Written before the task starts. */
+	std::atomic<float> activeHoldTarget;
+
+	/** Stops the hold task and joins it. Safe when no hold is running. */
+	void stopHoldTask();
 
 	void buildMotors();
 

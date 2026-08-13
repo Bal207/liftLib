@@ -99,12 +99,10 @@ void autonomous() {
   // Read the lift angle from the sensor on the joint. Set this before
   // initialize(), so it knows not to tare the motors against a zero the sensor
   // does not share.
-  liftStage.setPositionSource(
-      [] { return static_cast<float>(liftSensor.get_angle()) / 100.0f; });
 
   cascade.initialize();
-  liftStage.addPosition("Woah Coool", 25);
-  liftStage.moveTo("Woah Coool");
+  liftStage.addPosition("Stage 1", 25);
+  liftStage.moveTo("Stage 1");
   // Scoped to the claw, so it still fires while the lift stage is moving.
   cascade.addConditionalAction(clawIsOverExtended, retractClaw, Precedence::Absolute,
                                {&claw});

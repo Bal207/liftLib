@@ -335,41 +335,20 @@ bool Lift::isWatching() const {
 	return watchTask != nullptr;
 }
 
-void Lift::moveToBlocking(const std::vector<float>& targets, std::uint32_t timeout) {
-	for (Subsystem* stage : positional) {
-		stage->reset();
+std::vector<std::pair<Subsystem*, float>> Lift::pairWithPositional(
+    const std::vector<float>& targets) const {
+	// Pair each target with the stage it drives, so the blocking loop waits on
+	// exactly the stages it commands. Waiting on a stage this move never drove
+	// would hang until the timeout: reset() clears its settled flag and nothing
+	// here would ever set it again.
+	const std::size_t count = std::min(positional.size(), targets.size());
+
+	std::vector<std::pair<Subsystem*, float>> moves;
+	moves.reserve(count);
+	for (std::size_t i = 0; i < count; i++) {
+		moves.push_back({positional[i], targets[i]});
 	}
-
-	std::uint32_t start = pros::millis();
-	std::uint32_t now = start;
-
-	// Wait on the stages this move drives, not on every stage, so an unrelated
-	// piston mid-travel cannot hold the move open.
-	const auto settled = [this]() {
-		for (const Subsystem* stage : positional) {
-			if (!stage->isSettled()) {
-				return false;
-			}
-		}
-		return true;
-	};
-
-	while (!settled() && !cancelRequested.load()) {
-		if (timeout != NO_TIMEOUT && pros::millis() - start >= timeout) {
-			break;
-		}
-		update(targets);
-		pros::Task::delay_until(&now, Mechanism::LOOP_DELAY_MS);
-	}
-
-	const bool cancelled = cancelRequested.load();
-	for (Subsystem* stage : positional) {
-		if (cancelled) {
-			stage->brake();
-		} else {
-			stage->hold();
-		}
-	}
+	return moves;
 }
 
 bool Lift::moveTo(const std::vector<float>& targets, bool async, std::uint32_t timeout) {
@@ -385,13 +364,17 @@ bool Lift::moveTo(const std::vector<float>& targets, bool async, std::uint32_t t
 		stage->stop();
 	}
 
-	std::vector<float> owned(targets.begin(), targets.begin() + positional.size());
+	const std::vector<std::pair<Subsystem*, float>> owned = pairWithPositional(targets);
 
 	if (!async) {
 		cancelRequested.store(false);
 		claimStages(positional, true);
 		moveToBlocking(owned, timeout);
 		releaseStages();
+		// A blocking move never runs through cancelTask(), so a stop() from
+		// another task would otherwise leave this latched and abort the next
+		// move on its first tick.
+		cancelRequested.store(false);
 		return true;
 	}
 
@@ -426,7 +409,9 @@ void Lift::moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves
 		if (cancelled) {
 			move.first->brake();
 		} else {
-			move.first->hold();
+			// Hold at the commanded target, not at wherever the stage came to
+			// rest, so droop under load is corrected instead of latched.
+			move.first->holdAt(move.second);
 		}
 	}
 }
@@ -454,6 +439,9 @@ bool Lift::moveTo(std::initializer_list<std::pair<Subsystem*, float>> moves, boo
 		claimStages(claimed, true);
 		moveToBlocking(resolved, timeout);
 		releaseStages();
+		// See the target-list overload: a blocking move has to clear this
+		// itself, or a stop() mid-move poisons the next one.
+		cancelRequested.store(false);
 		return true;
 	}
 

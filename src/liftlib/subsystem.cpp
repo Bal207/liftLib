@@ -40,8 +40,11 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, PID pid)
       outputMode(OutputMode::Voltage),
       derivedOutputLimit(0),
       torqueSharing(false),
+      lastPosition(0),
       feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
-      cancelRequested(false) {
+      cancelRequested(false),
+      holdStop(false),
+      activeHoldTarget(0) {
 	buildMotors();
 }
 
@@ -60,8 +63,11 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, PID pid, float minPo
       outputMode(OutputMode::Voltage),
       derivedOutputLimit(0),
       torqueSharing(false),
+      lastPosition(0),
       feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
-      cancelRequested(false) {
+      cancelRequested(false),
+      holdStop(false),
+      activeHoldTarget(0) {
 	buildMotors();
 }
 
@@ -249,8 +255,11 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoin
       outputMode(OutputMode::Voltage),
       derivedOutputLimit(0),
       torqueSharing(false),
+      lastPosition(0),
       feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
-      cancelRequested(false) {
+      cancelRequested(false),
+      holdStop(false),
+      activeHoldTarget(0) {
 	buildMotors();
 }
 
@@ -270,8 +279,11 @@ Subsystem::Subsystem(std::vector<MotorConfig> motorConfigs, std::vector<GainPoin
       outputMode(OutputMode::Voltage),
       derivedOutputLimit(0),
       torqueSharing(false),
+      lastPosition(0),
       feedforwardHeadroom(DEFAULT_FEEDFORWARD_HEADROOM),
-      cancelRequested(false) {
+      cancelRequested(false),
+      holdStop(false),
+      activeHoldTarget(0) {
 	buildMotors();
 }
 
@@ -420,12 +432,28 @@ void Subsystem::initialize() {
 			motors[i].motor.tare_position();
 		}
 	}
+
+	// Seed the fallback from a real reading. Until something reads cleanly it
+	// stays at zero, and a sensor that faults from the very first tick would
+	// otherwise fall back on a zero that means nothing.
+	getPosition();
 }
 
 float Subsystem::getPosition() const {
 	if (positionSource != nullptr) {
 		const float position = positionSource();
-		return std::isnan(position) ? 0 : position;
+
+		// A faulted sensor must not read as a plausible position. Reporting 0
+		// would make the error the whole target and drive the mechanism into a
+		// hard stop, and PROS_ERR passed through arithmetic reads as a huge
+		// value that does the same in the other direction. Freeze at the last
+		// good sample instead, which holds station until the sensor returns.
+		if (!isUsablePosition(position)) {
+			return lastPosition;
+		}
+
+		lastPosition = position;
+		return position;
 	}
 
 	float total = 0;
@@ -438,7 +466,26 @@ float Subsystem::getPosition() const {
 		total += static_cast<float>(position) * motorConfigs[i].gear_ratio;
 		counted++;
 	}
-	return counted > 0 ? total / counted : 0;
+
+	// Every motor failed to report. Hold the last good average rather than
+	// claiming the mechanism is at zero.
+	if (counted == 0) {
+		return lastPosition;
+	}
+
+	lastPosition = total / counted;
+	return lastPosition;
+}
+
+bool Subsystem::isUsablePosition(float position) {
+	if (std::isnan(position) || std::isinf(position)) {
+		return false;
+	}
+
+	// PROS reports a failed read as PROS_ERR (INT32_MAX). Scaled by a gear
+	// ratio or divided down by a user's conversion it lands somewhere absurd
+	// rather than exactly on the sentinel, so reject the magnitude.
+	return std::abs(position) < POSITION_SANITY_LIMIT;
 }
 
 float Subsystem::clampTarget(float target) const {
@@ -565,6 +612,87 @@ void Subsystem::hold() {
 	updateAt(holdTarget, position);
 }
 
+void Subsystem::holdAt(float target) {
+	if (!feedforward.isEnabled()) {
+		brake();
+		return;
+	}
+
+	// Latch the commanded target rather than the measured position. A move that
+	// settles a little low under load would otherwise bake that droop into the
+	// hold target, and every later move would latch from the previous sag.
+	if (!holding) {
+		holdTarget = clampTarget(target);
+		holding = true;
+	}
+
+	updateAt(holdTarget, getPosition());
+}
+
+void Subsystem::holdActively(float target) {
+	// No gravity term means nothing to hold with, and the brake already does
+	// the job. Spinning a task to write zero every tick would only keep the
+	// motors energised for nothing.
+	if (!feedforward.isEnabled()) {
+		brake();
+		return;
+	}
+
+	// Re-latch on the new target rather than stacking a second task on the
+	// motors.
+	stopHoldTask();
+
+	activeHoldTarget.store(clampTarget(target));
+	releaseHold();
+	holdStop.store(false);
+
+	auto started = std::make_unique<pros::Task>([this]() {
+		std::uint32_t now = pros::millis();
+		while (!holdStop.load()) {
+			holdAt(activeHoldTarget.load());
+			pros::Task::delay_until(&now, LOOP_DELAY_MS);
+		}
+	});
+
+	// An async move starts its hold from inside the move task while the next
+	// command stops it from the caller's, so publishing the pointer is the one
+	// step that needs guarding. The task is already running by now; the lock
+	// covers the handoff, not the work.
+	holdMutex.take(TIMEOUT_MAX);
+	holdTask = std::move(started);
+	holdMutex.give();
+}
+
+void Subsystem::holdActively() {
+	holdActively(getPosition());
+}
+
+bool Subsystem::isHoldingActively() const {
+	holdMutex.take(TIMEOUT_MAX);
+	const bool active =
+	    holdTask != nullptr && holdTask->get_state() != pros::E_TASK_STATE_DELETED;
+	holdMutex.give();
+	return active;
+}
+
+void Subsystem::stopHoldTask() {
+	// Take the pointer out from under the lock and join it outside, so the lock
+	// is never held across a join. Holding it there would block a move that is
+	// publishing its own hold, and the two would wait on each other.
+	holdMutex.take(TIMEOUT_MAX);
+	std::unique_ptr<pros::Task> stopping = std::move(holdTask);
+	holdMutex.give();
+
+	if (stopping == nullptr) {
+		return;
+	}
+
+	holdStop.store(true);
+	stopping->join();
+	stopping.reset();
+	holdStop.store(false);
+}
+
 void Subsystem::releaseHold() {
 	holding = false;
 }
@@ -595,6 +723,10 @@ float Subsystem::holdOutput() const {
 }
 
 void Subsystem::setOutput(float output) {
+	// Driving by hand takes the motors, so a hold task still writing them every
+	// tick would fight this and the mechanism would judder between the two.
+	stopHoldTask();
+
 	float limit = pid.getMaxOutput();
 	if (limit > 0) {
 		output = std::clamp(output, -limit, limit);
@@ -631,9 +763,18 @@ void Subsystem::moveToBlocking(float target, std::uint32_t timeout) {
 
 	if (cancelRequested.load()) {
 		brake();
-	} else {
-		hold();
+		return;
 	}
+
+	// Hold against the target that was commanded, not against wherever the
+	// mechanism came to rest. Settling a little low under load would otherwise
+	// be latched as the new target and compounded by every later move.
+	//
+	// The hold runs in its own task so the loop stays closed after this returns;
+	// one output write then silence is a sag on a loaded lift. It is not the
+	// move task, so the move still reports finished and waitUntilSettled()
+	// returns normally. Without a feedforward this brakes instead.
+	holdActively(target);
 }
 
 void Subsystem::moveTo(float target, bool async, std::uint32_t timeout) {
@@ -642,6 +783,10 @@ void Subsystem::moveTo(float target, bool async, std::uint32_t timeout) {
 	if (!async) {
 		cancelRequested.store(false);
 		moveToBlocking(target, timeout);
+		// A blocking move never runs through cancelTask(), so a stop() from
+		// another task would otherwise leave this latched and make the next
+		// blocking move abort on its first tick without moving anything.
+		cancelRequested.store(false);
 		return;
 	}
 
@@ -855,6 +1000,11 @@ bool Subsystem::previous(bool async, std::uint32_t timeout) {
 }
 
 void Subsystem::cancelTask() {
+	// A hold owns the motors just as a move does, so it has to end before
+	// anything else drives them. Two tasks writing the same motors every tick
+	// would fight and the mechanism would judder.
+	stopHoldTask();
+
 	if (task == nullptr) {
 		return;
 	}
@@ -904,7 +1054,10 @@ PID& Subsystem::getPID() {
 }
 
 Subsystem::~Subsystem() {
+	// cancelTask() stops the hold task too, so both are joined before any
+	// member the tasks touch is destroyed.
 	cancelTask();
+	brake();
 }
 
 }  // namespace liftlib

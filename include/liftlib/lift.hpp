@@ -73,7 +73,9 @@ class Lift {
 
 	void stopStages();
 
-	void moveToBlocking(const std::vector<float>& targets, std::uint32_t timeout);
+	/** Pairs targets with the positional stages they drive, in stage order. */
+	std::vector<std::pair<Subsystem*, float>> pairWithPositional(
+	    const std::vector<float>& targets) const;
 
 	void moveToBlocking(const std::vector<std::pair<Subsystem*, float>>& moves,
 	                    std::uint32_t timeout);
