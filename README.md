@@ -6,14 +6,14 @@ An extremely easy to use yet dynamic library for vexV5 Lifts.
 
 ## Features
 
-- Named positions, with button-friendly `next()` and `previous()`
-- Motor groups with per-motor gear ratios and brake modes
-- Voltage control by default, on the familiar -127 to 127 scale
+- Named positions with `next()` and `previous()`
+- Motor groups with per motor gear ratios and brake modes
+- Voltage control by default (-127, 127)
 - PID with integral clamping, integral zone, output limiting, and slew
 - Position from the motor encoders or any sensor you plug in
 - Blocking and async moves, with timeouts on every move
 - Soft position limits per subsystem
-- Multi-stage coordination through `Lift`, pistons included
+- Multi stage coordination and management through `Lift` parent class, pistons included
 - Gravity compensation for lifts and pivoting arms
 
 ## Installation
@@ -271,7 +271,7 @@ if (up && arm.getPosition() < arm.getMaxPosition()) {
 `hasLimits()`, `getMinPosition()`, and `getMaxPosition()` report what the
 subsystem was built with.
 
-### A multi-stage lift
+### A multi stage lift
 
 ```cpp
 Subsystem stage1({m1, m2}, stage1Pid, 0, 55);
